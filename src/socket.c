@@ -1,0 +1,248 @@
+/*
+ * socket.c - UDP socket management for udnsfilter
+ *
+ * This file handles UDP socket creation, binding, and I/O for DNS queries.
+ * It manages both IPv4 and IPv6 sockets and integrates with uloop for
+ * event-driven packet reception.
+ */
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+#include <stdio.h>
+
+#include "internal.h"
+
+/**
+ * udns_socket_for_client() - Get appropriate socket for client address family
+ * @client_addr: Client address
+ *
+ * Return: Pointer to IPv4 or IPv6 socket based on client address family
+ */
+struct udns_socket *udns_socket_for_client(struct sockaddr_storage *client_addr)
+{
+	if (((struct sockaddr *)client_addr)->sa_family == AF_INET)
+		return &global_ctx.sock4;
+	else
+		return &global_ctx.sock6;
+}
+
+/**
+ * socket_recv_cb() - Handle incoming DNS queries
+ * @ufd: uloop file descriptor
+ * @events: Event mask
+ *
+ * Receives DNS queries from clients, parses them, and invokes the
+ * query callback. Handles malformed packets by sending SERVFAIL.
+ */
+static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
+{
+	struct udns_socket *sock = container_of(ufd, struct udns_socket, ufd);
+	uint8_t buffer[DNS_MAX_PACKET_SIZE];
+	struct sockaddr_storage from;
+	socklen_t from_len = sizeof(from);
+	ssize_t len;
+	struct dns_packet pkt;
+
+	if (!(events & ULOOP_READ))
+		return;
+
+	len = recvfrom(sock->fd, buffer, sizeof(buffer), 0,
+	               (struct sockaddr *)&from, &from_len);
+	if (len < 0) {
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
+			udns_set_error("recvfrom failed: %s", strerror(errno));
+		return;
+	}
+
+	if (len == 0)
+		return;
+
+	global_ctx.stats.total_queries++;
+
+	if (packet_parse(&pkt, buffer, len) < 0) {
+		global_ctx.stats.upstream_errors++;
+
+		if (len >= 2) {
+			uint16_t query_id = (buffer[0] << 8) | buffer[1];
+			struct dns_packet response;
+
+			if (packet_build_servfail(&response, query_id) == 0) {
+				udns_socket_send(sock, response.data, response.len,
+				                 (struct sockaddr *)&from, from_len);
+				free(response.data);
+			}
+		}
+		return;
+	}
+
+	udns_callback_query(&pkt, &from, from_len, buffer, len);
+
+	free(pkt.data);
+}
+
+/**
+ * create_socket() - Create and bind a UDP socket
+ * @sock: Socket structure to initialise
+ * @addr: Address to bind to
+ * @port: Port number
+ * @family: Address family (AF_INET or AF_INET6)
+ *
+ * Creates a UDP socket, sets socket options, binds to the specified
+ * address and port, and registers with uloop for event notification.
+ *
+ * Return: 0 on success, -1 on error
+ */
+static int create_socket(struct udns_socket *sock, const char *addr, int port, int family)
+{
+	int fd, val;
+	socklen_t addrlen;
+
+	if (sock->fd >= 0) {
+		udns_set_error("Socket already created");
+		return -1;
+	}
+
+	fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_UDP);
+	if (fd < 0) {
+		udns_set_error("Failed to create socket: %s", strerror(errno));
+		return -1;
+	}
+
+	val = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0) {
+		udns_set_error("SO_REUSEADDR failed: %s", strerror(errno));
+		close(fd);
+		return -1;
+	}
+
+	if (family == AF_INET6) {
+		val = 1;
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &val, sizeof(val)) < 0) {
+			udns_set_error("IPV6_V6ONLY failed: %s", strerror(errno));
+			close(fd);
+			return -1;
+		}
+	}
+
+	memset(&sock->bind_addr, 0, sizeof(sock->bind_addr));
+
+	if (family == AF_INET) {
+		sock->bind_addr.sin.sin_family = AF_INET;
+		sock->bind_addr.sin.sin_port = htons(port);
+
+		if (inet_pton(AF_INET, addr, &sock->bind_addr.sin.sin_addr) <= 0) {
+			udns_set_error("Invalid IPv4 address: %s", addr);
+			close(fd);
+			return -1;
+		}
+
+		addrlen = sizeof(sock->bind_addr.sin);
+	} else {
+		sock->bind_addr.sin6.sin6_family = AF_INET6;
+		sock->bind_addr.sin6.sin6_port = htons(port);
+
+		if (inet_pton(AF_INET6, addr, &sock->bind_addr.sin6.sin6_addr) <= 0) {
+			udns_set_error("Invalid IPv6 address: %s", addr);
+			close(fd);
+			return -1;
+		}
+
+		addrlen = sizeof(sock->bind_addr.sin6);
+	}
+
+	if (bind(fd, (struct sockaddr *)&sock->bind_addr, addrlen) < 0) {
+		udns_set_error("bind failed on %s:%d: %s", addr, port, strerror(errno));
+		close(fd);
+		return -1;
+	}
+
+	sock->fd = fd;
+	sock->family = family;
+	sock->ufd.fd = fd;
+	sock->ufd.cb = socket_recv_cb;
+
+	uloop_fd_add(&sock->ufd, ULOOP_READ);
+
+	return 0;
+}
+
+/**
+ * udns_socket_create() - Create IPv4 and IPv6 DNS sockets
+ * @addr: IPv4 address to bind to
+ * @port: Port number
+ *
+ * Creates both IPv4 and IPv6 UDP sockets for receiving DNS queries.
+ * IPv6 socket binds to ::1 (localhost).
+ *
+ * Return: 0 if at least one socket succeeds, -1 if both fail
+ */
+int udns_socket_create(const char *addr, int port)
+{
+	int ret4 = -1, ret6 = -1;
+
+	ret4 = create_socket(&global_ctx.sock4, addr, port, AF_INET);
+	ret6 = create_socket(&global_ctx.sock6, "::1", port, AF_INET6);
+
+	if (ret4 < 0 && ret6 < 0) {
+		udns_set_error("Failed to create any sockets");
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
+ * udns_socket_close() - Close a DNS socket
+ * @sock: Socket to close
+ *
+ * Closes the socket and removes it from uloop.
+ */
+void udns_socket_close(struct udns_socket *sock)
+{
+	if (!sock || sock->fd < 0)
+		return;
+
+	uloop_fd_delete(&sock->ufd);
+	close(sock->fd);
+	sock->fd = -1;
+}
+
+/**
+ * udns_socket_send() - Send DNS packet to client
+ * @sock: Socket to send from
+ * @data: Packet data
+ * @len: Data length
+ * @dest: Destination address
+ * @dest_len: Address length
+ *
+ * Return: 0 on success, -1 on error
+ */
+int udns_socket_send(struct udns_socket *sock, const uint8_t *data, size_t len,
+                     struct sockaddr *dest, socklen_t dest_len)
+{
+	ssize_t ret;
+
+	if (!sock || sock->fd < 0) {
+		udns_set_error("Invalid socket");
+		return -1;
+	}
+
+	ret = sendto(sock->fd, data, len, 0, dest, dest_len);
+	if (ret < 0) {
+		udns_set_error("sendto failed: %s", strerror(errno));
+		return -1;
+	}
+
+	if ((size_t)ret != len) {
+		udns_set_error("Partial send: %zd of %zu bytes", ret, len);
+		return -1;
+	}
+
+	return 0;
+}

@@ -1,0 +1,260 @@
+#!/usr/bin/env ucode
+'use strict';
+
+import * as uloop from 'uloop';
+import * as ubus from 'ubus';
+import * as udnsfilter from 'udnsfilter';
+
+const LISTEN_PORT = 54;
+
+let config = {
+	listen_addr: '0.0.0.0',
+	listen_port: LISTEN_PORT,
+	//upstream_servers: ['dns+https://1.1.1.1/dns-query'],
+	upstream_servers: ['dns://8.8.8.8'],
+	filter_enabled: true,
+	blocklist_file: '/src/projects/dns/udnsfilter/test-blocklist.txt',
+	rotation: true,
+	cache_ttl: 3600,
+};
+
+let stats = {
+	queries: 0,
+	forwarded: 0,
+	blocked: 0,
+	errors: 0
+};
+
+let ubus_conn;
+let ubus_obj;
+
+let tracked_ips = {};
+let global_domains = { replied: {}, blocked: {} };
+
+function ubus_init() {
+	ubus_conn = ubus.connect();
+	if (!ubus_conn)
+		return false;
+
+	ubus_obj = ubus_conn.publish('udnsfilter', {
+		stats: {
+			call: function(req) {
+				let c_stats = udnsfilter.stats_get();
+				return {
+					total_queries: c_stats.total_queries || 0,
+					blocked_queries: c_stats.blocked_queries || 0,
+					allowed_queries: c_stats.allowed_queries || 0,
+					forwarded_queries: c_stats.forwarded_queries || 0,
+					upstream_errors: c_stats.upstream_errors || 0
+				};
+			},
+			args: {}
+		},
+		reinit: {
+			call: function(req) {
+				if (!udnsfilter.reinit())
+					return { success: false, error: "ares_reinit failed" };
+
+				return { success: true };
+			},
+			args: {}
+		},
+		servers: {
+			call: function(req) {
+				return udnsfilter.get_server_states();
+			},
+			args: {}
+		},
+		reload_filter: {
+			call: function(req) {
+				if (!config.filter_enabled || !config.blocklist_file)
+					return { success: false, error: "filtering not enabled" };
+
+				let count = udnsfilter.filter_load(config.blocklist_file);
+				if (count < 0)
+					return { success: false, error: "failed to load filter list" };
+
+				return { success: true, rules_loaded: count };
+			},
+			args: {}
+		},
+		reset_stats: {
+			call: function(req) {
+				udnsfilter.stats_reset();
+				return { success: true };
+			},
+			args: {}
+		},
+		tracking: {
+			call: function(req) {
+				let ip = req.args?.ip;
+				let enable = req.args?.enable;
+
+				if (!ip) {
+					let result = {};
+					for (let tracked_ip in tracked_ips) {
+						result[tracked_ip] = tracked_ips[tracked_ip];
+					}
+					return result;
+				}
+
+				if (enable) {
+					if (!tracked_ips[ip])
+						tracked_ips[ip] = { replied: {}, blocked: {} };
+					return { success: true, tracking: ip };
+				} else {
+					if (tracked_ips[ip])
+						delete tracked_ips[ip];
+					return { success: true, stopped: ip };
+				}
+			},
+			args: {
+				ip: "127.0.0.1",
+				enable: true
+			}
+		},
+		domains: {
+			call: function(req) {
+				return global_domains;
+			},
+			args: {}
+		}
+	});
+
+	return ubus_obj != null;
+}
+
+function ubus_cleanup() {
+	if (ubus_obj)
+		ubus_obj.remove();
+	if (ubus_conn)
+		ubus_conn.disconnect();
+}
+
+function handle_query(packet, client_addr) {
+	stats.queries++;
+
+	if (!packet.questions || length(packet.questions) == 0) {
+		stats.errors++;
+		return;
+	}
+
+	let domain = packet.questions[0].name;
+	let client_ip = client_addr.address;
+
+	printf("Query #%d from %s:%d: %s\n",
+	       stats.queries, client_ip, client_addr.port, domain);
+
+	if (config.filter_enabled && domain) {
+		let result = udnsfilter.filter_match(domain);
+		if (result && result.blocked) {
+			printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
+			stats.blocked++;
+
+			if (!global_domains.blocked[domain])
+				global_domains.blocked[domain] = 0;
+			global_domains.blocked[domain]++;
+
+			if (tracked_ips[client_ip]) {
+				if (!tracked_ips[client_ip].blocked[domain])
+					tracked_ips[client_ip].blocked[domain] = 0;
+				tracked_ips[client_ip].blocked[domain]++;
+			}
+
+			udnsfilter.send_blocked_response(client_addr, packet);
+			return;
+		}
+	}
+
+	if (!global_domains.replied[domain])
+		global_domains.replied[domain] = 0;
+	global_domains.replied[domain]++;
+
+	if (tracked_ips[client_ip]) {
+		if (!tracked_ips[client_ip].replied[domain])
+			tracked_ips[client_ip].replied[domain] = 0;
+		tracked_ips[client_ip].replied[domain]++;
+	}
+
+	udnsfilter.forward_query(client_addr, packet);
+	stats.forwarded++;
+}
+
+function init() {
+	printf("Initialising udnsfilter...\n");
+
+	if (!udnsfilter.socket_create(config.listen_addr, config.listen_port,
+	                               config.rotation, config.cache_ttl)) {
+		printf("Failed to create socket\n");
+		return false;
+	}
+
+	printf("Listening on %s:%d\n", config.listen_addr, config.listen_port);
+	printf("Server rotation: %J\n", config.rotation);
+	printf("Cache TTL: %d seconds\n", config.cache_ttl);
+
+	udnsfilter.set_callback('query', handle_query);
+
+	udnsfilter.set_upstream(config.upstream_servers);
+	printf("Upstream servers: %s\n", join(', ', config.upstream_servers));
+
+	if (!ubus_init()) {
+		printf("Warning: Failed to initialise ubus\n");
+	} else {
+		printf("ubus interface registered\n");
+	}
+
+	if (config.filter_enabled && config.blocklist_file) {
+		printf("Loading blocklist from %s...\n", config.blocklist_file);
+		let count = udnsfilter.filter_load(config.blocklist_file);
+		if (count > 0) {
+			printf("Loaded %d filter rules\n", count);
+		} else {
+			printf("Warning: Failed to load filter list\n");
+		}
+	}
+
+	return true;
+}
+
+function print_stats() {
+	printf("\n--- Statistics ---\n");
+	printf("Total queries: %d\n", stats.queries);
+	printf("Blocked: %d\n", stats.blocked);
+	printf("Forwarded: %d\n", stats.forwarded);
+	printf("Errors: %d\n", stats.errors);
+	printf("------------------\n\n");
+}
+
+function shutdown() {
+	printf("\nShutting down...\n");
+
+	print_stats();
+
+	ubus_cleanup();
+	udnsfilter.shutdown();
+
+	uloop.end();
+}
+
+uloop.init();
+
+if (!init()) {
+	printf("Initialisation failed\n");
+	exit(1);
+}
+
+uloop.signal("SIGINT", shutdown);
+uloop.signal("SIGTERM", shutdown);
+
+uloop.interval(30000, print_stats);
+
+printf("uDNS Filter started. Press Ctrl+C to stop.\n\n");
+
+if (!udnsfilter.drop_privileges()) {
+	printf("Warning: Failed to drop privileges\n");
+} else {
+	printf("Privileges dropped\n");
+}
+
+uloop.run();
