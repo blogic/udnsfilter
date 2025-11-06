@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <uci.h>
 #include "internal.h"
 #include "privilege.h"
 
@@ -335,6 +336,83 @@ uc_udnsfilter_filter_load(uc_vm_t *vm, size_t nargs)
 		return NULL;
 
 	return ucv_int64_new(count);
+}
+
+/**
+ * uc_udnsfilter_filter_load_uci() - Load filter lists from UCI configuration
+ * @vm: ucode VM instance
+ * @nargs: Number of arguments (0)
+ *
+ * Loads domain filter rules from all enabled filters defined in
+ * /etc/config/dns UCI configuration file.
+ *
+ * Return: Object with total_rules, loaded_filters, and filter details array
+ */
+static uc_value_t *
+uc_udnsfilter_filter_load_uci(uc_vm_t *vm, size_t nargs)
+{
+	struct uci_context *uci_ctx;
+	struct uci_package *pkg;
+	struct uci_element *e;
+	uc_value_t *result, *filters_array, *filter_obj;
+	int total_rules = 0;
+	int loaded_filters = 0;
+
+	uci_ctx = uci_alloc_context();
+	if (!uci_ctx)
+		return NULL;
+
+	if (uci_load(uci_ctx, "dns", &pkg) != UCI_OK) {
+		uci_free_context(uci_ctx);
+		return NULL;
+	}
+
+	filters_array = ucv_array_new(vm);
+
+	uci_foreach_element(&pkg->sections, e) {
+		struct uci_section *s = uci_to_section(e);
+		const char *enabled, *name, *url, *path;
+		int count;
+
+		if (strcmp(s->type, "filter") != 0)
+			continue;
+
+		enabled = uci_lookup_option_string(uci_ctx, s, "enabled");
+		if (!enabled || strcmp(enabled, "1") != 0)
+			continue;
+
+		name = uci_lookup_option_string(uci_ctx, s, "name");
+		url = uci_lookup_option_string(uci_ctx, s, "url");
+		path = uci_lookup_option_string(uci_ctx, s, "path");
+
+		if (!path)
+			continue;
+
+		count = filter_load_file(&global_ctx.filter, path);
+		if (count > 0) {
+			filter_obj = ucv_object_new(vm);
+			ucv_object_add(filter_obj, "name",
+			               ucv_string_new(name ? name : s->e.name));
+			ucv_object_add(filter_obj, "path", ucv_string_new(path));
+			ucv_object_add(filter_obj, "rules", ucv_int64_new(count));
+			if (url)
+				ucv_object_add(filter_obj, "url", ucv_string_new(url));
+
+			ucv_array_push(filters_array, filter_obj);
+			total_rules += count;
+			loaded_filters++;
+		}
+	}
+
+	uci_unload(uci_ctx, pkg);
+	uci_free_context(uci_ctx);
+
+	result = ucv_object_new(vm);
+	ucv_object_add(result, "total_rules", ucv_int64_new(total_rules));
+	ucv_object_add(result, "loaded_filters", ucv_int64_new(loaded_filters));
+	ucv_object_add(result, "filters", filters_array);
+
+	return result;
 }
 
 /**
@@ -754,6 +832,7 @@ static const uc_function_list_t module_fns[] = {
 	{ "set_callback",            uc_udnsfilter_set_callback },
 	{ "shutdown",                uc_udnsfilter_shutdown },
 	{ "filter_load",             uc_udnsfilter_filter_load },
+	{ "filter_load_uci",         uc_udnsfilter_filter_load_uci },
 	{ "filter_match",            uc_udnsfilter_filter_match },
 	{ "stats_get",               uc_udnsfilter_stats_get },
 	{ "stats_reset",             uc_udnsfilter_stats_reset },

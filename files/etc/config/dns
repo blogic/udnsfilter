@@ -1,0 +1,42 @@
+
+config filter 'adguard_dns'
+	option enabled '0'
+	option name 'AdGuard DNS Filter'
+	option url 'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt'
+	option path '/var/lib/udnsfilter/adguard_dns.txt'
+
+config filter 'stevenblack'
+	option enabled '0'
+	option name 'StevenBlack Unified Hosts'
+	option url 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts'
+	option path '/var/lib/udnsfilter/stevenblack.txt'
+
+config filter 'easylist'
+	option enabled '0'
+	option name 'EasyList'
+	option url 'https://easylist.to/easylist/easylist.txt'
+	option path '/var/lib/udnsfilter/easylist.txt'
+
+config filter 'easyprivacy'
+	option enabled '0'
+	option name 'EasyPrivacy'
+	option url 'https://easylist.to/easylist/easyprivacy.txt'
+	option path '/var/lib/udnsfilter/easyprivacy.txt'
+
+config filter 'oisd_small'
+	option enabled '0'
+	option name 'OISD Small'
+	option url 'https://small.oisd.nl/'
+	option path '/var/lib/udnsfilter/oisd_small.txt'
+
+config filter 'adaway'
+	option enabled '0'
+	option name 'AdAway'
+	option url 'https://adaway.org/hosts.txt'
+	option path '/var/lib/udnsfilter/adaway.txt'
+
+config filter 'fanboy_tracking'
+	option enabled '0'
+	option name 'Fanboy Enhanced Tracking List'
+	option url 'https://secure.fanboy.co.nz/enhancedstats.txt'
+	option path '/var/lib/udnsfilter/fanboy_tracking.txt'

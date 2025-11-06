@@ -1,0 +1,145 @@
+#!/usr/bin/ucode
+'use strict';
+
+import * as uci from 'uci';
+import * as log from 'log';
+import * as uloop from 'uloop';
+import * as fs from 'fs';
+
+const DATA_DIR = '/var/lib/udnsfilter';
+
+log.ulog_open(log.ULOG_SYSLOG);
+
+function ensure_dir(path) {
+	if (!fs.access(path, 'r')) {
+		if (!fs.mkdir(path, 0755)) {
+			log.ulog('LOG_ERR', `Failed to create directory: ${path}`);
+			return false;
+		}
+	}
+	return true;
+}
+
+function spawn_download(url, dest_path, on_complete) {
+	const temp_path = dest_path + '.tmp';
+
+	log.ulog('LOG_INFO', `Downloading ${url}`);
+
+	const proc = uloop.process('/usr/bin/wget',
+		['-q', '-O', temp_path, url],
+		null,
+		(exitcode) => {
+			if (exitcode != 0) {
+				log.ulog('LOG_ERR', `wget failed with exit code ${exitcode} for ${url}`);
+				fs.unlink(temp_path);
+				on_complete(false);
+				return;
+			}
+
+			const stats = fs.stat(temp_path);
+			if (!stats || stats.size == 0) {
+				log.ulog('LOG_ERR', `Downloaded file is empty: ${url}`);
+				fs.unlink(temp_path);
+				on_complete(false);
+				return;
+			}
+
+			if (!fs.rename(temp_path, dest_path)) {
+				log.ulog('LOG_ERR', `Failed to move ${temp_path} to ${dest_path}`);
+				fs.unlink(temp_path);
+				on_complete(false);
+				return;
+			}
+
+			log.ulog('LOG_INFO', `Successfully downloaded ${url} (${stats.size} bytes)`);
+			on_complete(true);
+		}
+	);
+
+	if (!proc) {
+		log.ulog('LOG_ERR', `Failed to spawn wget for ${url}`);
+		on_complete(false);
+		return null;
+	}
+
+	return proc;
+}
+
+function update_filters() {
+	if (!ensure_dir(DATA_DIR)) {
+		exit(2);
+	}
+
+	const cursor = uci.cursor();
+	if (!cursor) {
+		log.ulog('LOG_ERR', 'Failed to create UCI cursor');
+		exit(2);
+	}
+
+	if (!cursor.load('dns')) {
+		log.ulog('LOG_ERR', 'Failed to load DNS configuration');
+		exit(2);
+	}
+
+	const filters = [];
+
+	cursor.foreach('dns', 'filter', function(section) {
+		const name = section['.name'];
+		const enabled = section.enabled;
+		const url = section.url;
+		const path = section.path;
+		const display_name = section.name || name;
+
+		if (enabled != '1') {
+			log.ulog('LOG_INFO', `Skipping disabled filter: ${display_name}`);
+			return;
+		}
+
+		if (!url || !path) {
+			log.ulog('LOG_WARNING', `Filter ${display_name} missing url or path`);
+			return;
+		}
+
+		push(filters, { name: display_name, url: url, path: path });
+	});
+
+	if (length(filters) == 0) {
+		log.ulog('LOG_WARNING', 'No enabled filters found in configuration');
+		exit(0);
+	}
+
+	uloop.init();
+
+	let success_count = 0;
+	let failure_count = 0;
+	let completed = 0;
+	const total = length(filters);
+
+	for (let filter in filters) {
+		spawn_download(filter.url, filter.path, (success) => {
+			completed++;
+
+			if (success) {
+				success_count++;
+				log.ulog('LOG_INFO', `Filter ${filter.name} downloaded successfully`);
+			} else {
+				failure_count++;
+			}
+
+			if (completed == total) {
+				log.ulog('LOG_INFO', `Update complete: ${success_count} succeeded, ${failure_count} failed out of ${total}`);
+
+				if (failure_count == total)
+					exit(2);
+				else if (failure_count > 0)
+					exit(1);
+				else
+					exit(0);
+			}
+		});
+	}
+
+	uloop.run();
+}
+
+update_filters();
