@@ -61,13 +61,14 @@ bool domain_match_subdomain(const char *domain, const char *pattern)
 	size_t domain_len = strlen(domain);
 	size_t pattern_len = strlen(pattern);
 
-	/* Exact match */
+	/* Exact match: example.com matches example.com */
 	if (strcasecmp(domain, pattern) == 0)
 		return true;
 
-	/* Subdomain match: domain ends with .pattern */
+	/* Subdomain match: www.example.com matches example.com */
 	if (domain_len > pattern_len) {
 		const char *suffix = domain + (domain_len - pattern_len);
+		/* Check for leading dot and matching suffix */
 		if (suffix[-1] == '.' && strcasecmp(suffix, pattern) == 0)
 			return true;
 	}
@@ -190,6 +191,7 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 	ptr = response + sizeof(struct dns_header);
 	remaining = len - sizeof(struct dns_header);
 
+	/* Skip question section name */
 	while (remaining > 0 && *ptr != 0) {
 		uint8_t label_len = *ptr;
 		if ((label_len & 0xc0) == 0xc0) {
@@ -205,17 +207,21 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 		remaining -= label_len + 1;
 	}
 
+	/* Skip null terminator */
 	if (remaining > 0 && *ptr == 0) {
 		ptr++;
 		remaining--;
 	}
 
+	/* Skip qtype and qclass */
 	if (remaining < 4)
 		return false;
 	ptr += 4;
 	remaining -= 4;
 
+	/* Scan answer section for private IPs */
 	for (uint16_t i = 0; i < ancount && remaining >= 12; i++) {
+		/* Skip answer name */
 		while (remaining > 0 && *ptr != 0) {
 			uint8_t label_len = *ptr;
 			if ((label_len & 0xc0) == 0xc0) {
@@ -239,6 +245,7 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 		if (remaining < 10)
 			return false;
 
+		/* Extract rtype and rdlength */
 		uint16_t rtype = (ptr[0] << 8) | ptr[1];
 		uint16_t rdlength = (ptr[8] << 8) | ptr[9];
 
@@ -248,11 +255,14 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 		if (remaining < rdlength)
 			return false;
 
+		/* Check A records for private IPv4 */
 		if (rtype == DNS_TYPE_A && rdlength == 4) {
 			uint32_t ip = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
 			if (is_private_ipv4(ip))
 				return true;
-		} else if (rtype == DNS_TYPE_AAAA && rdlength == 16) {
+		}
+		/* Check AAAA records for private IPv6 */
+		else if (rtype == DNS_TYPE_AAAA && rdlength == 16) {
 			if (is_private_ipv6(ptr))
 				return true;
 		}

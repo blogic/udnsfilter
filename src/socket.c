@@ -65,9 +65,11 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 
 	global_ctx.stats.total_queries++;
 
+	/* Parse DNS packet */
 	if (packet_parse(&pkt, buffer, len) < 0) {
 		global_ctx.stats.upstream_errors++;
 
+		/* Send SERVFAIL for malformed queries */
 		if (len >= 2) {
 			uint16_t query_id = (buffer[0] << 8) | buffer[1];
 			struct dns_packet response;
@@ -81,6 +83,7 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 		return;
 	}
 
+	/* Invoke ucode callback with query */
 	udns_callback_query(&pkt, &from, from_len, buffer, len);
 
 	free(pkt.data);

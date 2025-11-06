@@ -38,12 +38,14 @@ int privilege_drop(const char *user, const char *group)
 		return 0;
 	}
 
+	/* Default to nobody:nogroup */
 	if (!user || !user[0])
 		user = "nobody";
 
 	if (!group || !group[0])
 		group = "nogroup";
 
+	/* Lookup user and group IDs */
 	pw = getpwnam(user);
 	if (!pw) {
 		fprintf(stderr, "User '%s' not found: %s\n", user, strerror(errno));
@@ -58,21 +60,25 @@ int privilege_drop(const char *user, const char *group)
 	}
 	gid = gr->gr_gid;
 
+	/* Set supplementary groups */
 	if (initgroups(user, gid) < 0) {
 		fprintf(stderr, "initgroups failed: %s\n", strerror(errno));
 		return -1;
 	}
 
+	/* Drop group privileges */
 	if (setgid(gid) < 0) {
 		fprintf(stderr, "setgid failed: %s\n", strerror(errno));
 		return -1;
 	}
 
+	/* Drop user privileges */
 	if (setuid(uid) < 0) {
 		fprintf(stderr, "setuid failed: %s\n", strerror(errno));
 		return -1;
 	}
 
+	/* Verify privileges cannot be regained */
 	if (setuid(0) == 0 || seteuid(0) == 0) {
 		fprintf(stderr, "Failed to permanently drop privileges\n");
 		return -1;

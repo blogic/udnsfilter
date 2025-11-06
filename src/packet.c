@@ -73,17 +73,20 @@ static int scan_name_length(const uint8_t *data, size_t len, size_t offset)
 	while (pos < len) {
 		uint8_t label_len = data[pos];
 
+		/* Null terminator - end of name */
 		if (label_len == 0)
 			return pos - start_pos + 1;
 
-		/* Compression pointer */
+		/* Compression pointer: top 2 bits set */
 		if ((label_len & 0xc0) == 0xc0) {
 			if (pos + 1 >= len)
 				return -1;
 
+			/* Limit jumps to prevent infinite loops */
 			if (++jump_count > DNS_MAX_NAME_JUMPS)
 				return -1;
 
+			/* Track visited positions to detect loops */
 			size_t byte_idx = pos / 8;
 			uint8_t bit_mask = 1 << (pos % 8);
 			if (byte_idx < sizeof(visited) && (visited[byte_idx] & bit_mask))
@@ -91,12 +94,14 @@ static int scan_name_length(const uint8_t *data, size_t len, size_t offset)
 			if (byte_idx < sizeof(visited))
 				visited[byte_idx] |= bit_mask;
 
+			/* Compression pointer is always 2 bytes */
 			return pos - start_pos + 2;
 		}
 
 		if (label_len > DNS_MAX_LABEL_LENGTH)
 			return -1;
 
+		/* Skip label and its length byte */
 		pos += label_len + 1;
 		if (pos > len)
 			return -1;

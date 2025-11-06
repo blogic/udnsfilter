@@ -56,13 +56,16 @@ static void proxy_process_cb(struct uloop_process *proc, int exitcode)
 	fprintf(stderr, "DoH proxy on port %d exited with code %d, restarting...\n",
 	        proxy->port, exitcode);
 
+	/* Fork and restart the proxy process */
 	pid_t pid = fork();
 	if (pid == 0) {
+		/* Child: exec new proxy instance */
 		char port_str[16];
 		snprintf(port_str, sizeof(port_str), "%d", proxy->port);
 		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, proxy->doh_url, NULL);
 		_exit(1);
 	} else if (pid > 0) {
+		/* Parent: register new process with uloop */
 		proxy->proc.pid = pid;
 		uloop_process_add(&proxy->proc);
 	}

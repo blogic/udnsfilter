@@ -135,14 +135,17 @@ static void check_multi_info(struct doh_proxy_ctx *ctx)
 	int msgs_left;
 	struct pending_request *req;
 
+	/* Process all completed transfers */
 	while ((msg = curl_multi_info_read(ctx->multi_handle, &msgs_left))) {
 		if (msg->msg != CURLMSG_DONE)
 			continue;
 
+		/* Get request context from curl handle */
 		curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, (char **)&req);
 		if (!req)
 			continue;
 
+		/* Send DNS response back to client if successful */
 		if (msg->data.result == CURLE_OK) {
 			if (req->response_len > 0) {
 				sendto(ctx->listen_fd, req->response_data, req->response_len, 0,

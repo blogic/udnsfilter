@@ -215,6 +215,7 @@ int filter_load_file(struct filter_ctx *ctx, const char *path)
 		char *p = line;
 		size_t line_len = strlen(line);
 
+		/* Skip overly long lines */
 		if (line_len > 0 && line[line_len - 1] != '\n' && !feof(f)) {
 			int c;
 			while ((c = fgetc(f)) != EOF && c != '\n')
@@ -222,12 +223,15 @@ int filter_load_file(struct filter_ctx *ctx, const char *path)
 			continue;
 		}
 
+		/* Skip leading whitespace */
 		while (*p && isspace(*p))
 			p++;
 
+		/* Skip empty lines and comments */
 		if (*p == '\0' || *p == '#' || *p == '!')
 			continue;
 
+		/* Strip hosts file IP addresses */
 		if (strncmp(p, "0.0.0.0 ", 8) == 0)
 			p += 8;
 		else if (strncmp(p, "127.0.0.1 ", 10) == 0)
@@ -235,6 +239,7 @@ int filter_load_file(struct filter_ctx *ctx, const char *path)
 		else if (strncmp(p, ":: ", 3) == 0)
 			p += 3;
 
+		/* Strip trailing whitespace */
 		size_t len = strlen(p);
 		while (len > 0 && isspace(p[len - 1]))
 			p[--len] = '\0';
@@ -255,6 +260,7 @@ bool filter_match(struct filter_ctx *ctx, const char *domain, struct filter_rule
 	if (!ctx || !domain)
 		return false;
 
+	/* Fast path: hash table lookup for exact matches */
 	rule = hashtable_lookup(ctx->exact_ht, domain);
 	if (rule) {
 		if (matched)
@@ -262,6 +268,7 @@ bool filter_match(struct filter_ctx *ctx, const char *domain, struct filter_rule
 		return true;
 	}
 
+	/* Check subdomain rules (e.g., ||example.com^) */
 	for (rule = ctx->subdomain_rules; rule; rule = rule->next) {
 		if (domain_match_subdomain(domain, rule->pattern)) {
 			if (matched)
@@ -270,6 +277,7 @@ bool filter_match(struct filter_ctx *ctx, const char *domain, struct filter_rule
 		}
 	}
 
+	/* Check wildcard rules (e.g., *.example.com) */
 	for (rule = ctx->wildcard_rules; rule; rule = rule->next) {
 		if (domain_match_wildcard(domain, rule->pattern)) {
 			if (matched)

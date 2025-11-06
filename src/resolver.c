@@ -328,17 +328,21 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 	size_t response_len = 0;
 
 	if (status == ARES_SUCCESS && dnsrec) {
+		/* Convert c-ares DNS record to wire format */
 		ares_dns_write(dnsrec, &response_buf, &response_len);
 
 		if (response_buf && response_len >= 2) {
+			/* DNS rebinding protection: block private IPs */
 			if (dns_response_contains_private_ip(response_buf, response_len)) {
 				fprintf(stderr, "Blocked DNS rebinding attempt for domain %s\n",
 				        data->domain ? data->domain : "unknown");
 				global_ctx.stats.blocked_queries++;
 			} else {
+				/* Restore original query ID */
 				uint16_t id_net = htons(data->original_id);
 				memcpy(response_buf, &id_net, 2);
 
+				/* Send response to client */
 				udns_socket_send(data->sock, response_buf, response_len,
 				                (struct sockaddr *)&data->client_addr, data->client_addrlen);
 
