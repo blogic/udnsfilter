@@ -22,7 +22,12 @@ export function publish(config) {
 					blocked_queries: c_stats.blocked_queries || 0,
 					allowed_queries: c_stats.allowed_queries || 0,
 					forwarded_queries: c_stats.forwarded_queries || 0,
-					upstream_errors: c_stats.upstream_errors || 0
+					upstream_errors: c_stats.upstream_errors || 0,
+					malformed_queries: c_stats.malformed_queries || 0,
+					refused_queries: c_stats.refused_queries || 0,
+					rate_limited: c_stats.rate_limited || 0,
+					overload_dropped: c_stats.overload_dropped || 0,
+					rebind_blocked: c_stats.rebind_blocked || 0
 				};
 			},
 			args: {}
@@ -103,6 +108,11 @@ export function publish(config) {
 	});
 
 	return obj != null;
+};
+
+export function security_event(data) {
+	if (conn)
+		conn.event('udnsfilter.security', data);
 };
 
 export function cleanup() {

@@ -873,8 +873,57 @@ uc_udnsfilter_drop_privileges(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+static void security_set_bool(uc_value_t *obj, const char *key, bool *dst)
+{
+	uc_value_t *val = ucv_object_get(obj, key, NULL);
+
+	if (val && ucv_type(val) == UC_BOOLEAN)
+		*dst = ucv_boolean_get(val);
+}
+
+static void security_set_uint(uc_value_t *obj, const char *key, unsigned int *dst)
+{
+	uc_value_t *val = ucv_object_get(obj, key, NULL);
+
+	if (val && ucv_type(val) == UC_INTEGER)
+		*dst = (unsigned int)ucv_uint64_get(val);
+}
+
+/**
+ * uc_udnsfilter_security_set() - Apply the security configuration
+ * @vm: ucode VM instance
+ * @nargs: Number of arguments (1)
+ *
+ * Arguments: config (object). Missing keys keep their built-in defaults.
+ * Must be called before socket_create() so resolver flags such as DNS
+ * 0x20 take effect when the resolver is initialised.
+ *
+ * Return: true on success, NULL if the argument is not an object
+ */
+static uc_value_t *
+uc_udnsfilter_security_set(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *obj = uc_fn_arg(0);
+
+	if (ucv_type(obj) != UC_OBJECT)
+		return NULL;
+
+	security_set_bool(obj, "block_any", &udns_security.block_any);
+	security_set_bool(obj, "dns0x20", &udns_security.dns0x20);
+	security_set_uint(obj, "ratelimit", &udns_security.ratelimit);
+	security_set_uint(obj, "ratelimit_burst", &udns_security.ratelimit_burst);
+	security_set_uint(obj, "ratelimit_global", &udns_security.ratelimit_global);
+	security_set_uint(obj, "ratelimit_global_burst", &udns_security.ratelimit_global_burst);
+	security_set_uint(obj, "max_pending", &udns_security.max_pending);
+	security_set_uint(obj, "max_filter_rules", &udns_security.max_filter_rules);
+	security_set_uint(obj, "max_tcp_per_client", &udns_security.max_tcp_per_client);
+
+	return ucv_boolean_new(true);
+}
+
 static const uc_function_list_t module_fns[] = {
 	{ "socket_create",           uc_udnsfilter_socket_create },
+	{ "security_set",            uc_udnsfilter_security_set },
 	{ "set_callback",            uc_udnsfilter_set_callback },
 	{ "shutdown",                uc_udnsfilter_shutdown },
 	{ "filter_load",             uc_udnsfilter_filter_load },

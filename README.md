@@ -67,12 +67,39 @@ config main 'main'
 	option verbose '0'
 	option rebind_protection '1'
 	list rebind_domain 'plex.direct'
+	option block_any '1'
+	option dns0x20 '0'
+	option ratelimit '100'
+	option ratelimit_burst '300'
+	option ratelimit_global '1000'
+	option ratelimit_global_burst '2000'
+	option max_pending '2048'
+	option max_filter_rules '262144'
+	option max_tcp_per_client '8'
 ```
 
 - `upstream`: standard DNS URIs (`dns://host[:port]`) or DoH URIs (`dns+https://host/path`)
 - `bootstrap`: IP address used to resolve DoH hostnames, avoiding a resolver loop when udnsfilter is the system resolver
 - `rebind_protection` / `rebind_domain`: private-address blocking and its allowlist (listed domains and their subdomains are exempt)
 - `verbose`: per-query logging
+
+### Security Limits
+
+The options below harden the service against abuse. Each accepts `0` to disable that
+limit; the values shown above are the defaults.
+
+- `block_any`: answer NOTIMP to `ANY` queries rather than forwarding them, preventing their use in amplification (RFC 8482). Set `0` to allow `ANY`.
+- `dns0x20`: randomise the case of upstream query names for extra spoofing resistance. Off by default because some upstreams and middleboxes do not preserve case.
+- `ratelimit` / `ratelimit_burst`: per-client query rate (queries per second) and burst allowance. Over-limit UDP datagrams are dropped without a reply; over-limit TCP connections are closed.
+- `ratelimit_global` / `ratelimit_global_burst`: the same limits applied across all clients combined.
+- `max_pending`: maximum outstanding upstream queries. Beyond this the client is answered SERVFAIL immediately instead of the query being queued.
+- `max_filter_rules`: maximum number of loaded filter rules across all lists. Loading stops once the cap is reached.
+- `max_tcp_per_client`: maximum concurrent TCP connections from a single client address.
+
+The queries dropped by these limits are counted in `stats` (see below). After every stats
+interval, a `udnsfilter.security` ubus event carries the deltas of the malformed, rate
+limited, rebind blocked and overload dropped counters whenever any of them rose, so a
+monitor can subscribe to attack activity.
 
 ### DNS-over-HTTPS
 

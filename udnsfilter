@@ -13,6 +13,10 @@ let config = config_mod.load(ARGV[0]);
 function init() {
 	printf("Initialising udnsfilter...\n");
 
+	/* Fix resolver-level options (DNS 0x20) before the resolver is
+	 * initialised inside socket_create() */
+	udnsfilter.security_set(config.security);
+
 	if (!udnsfilter.socket_create(config.listen_addr, config.listen_port,
 	                               config.rotation, config.cache_ttl,
 	                               config.listen_addr6)) {
@@ -54,6 +58,30 @@ function init() {
 	return true;
 }
 
+let prev_security = {
+	malformed_queries: 0,
+	rate_limited: 0,
+	rebind_blocked: 0,
+	overload_dropped: 0,
+};
+
+function security_report(s) {
+	let deltas = {};
+	let total = 0;
+
+	for (let key in keys(prev_security)) {
+		let delta = (s[key] ?? 0) - prev_security[key];
+		prev_security[key] = s[key] ?? 0;
+		if (delta > 0) {
+			deltas[key] = delta;
+			total += delta;
+		}
+	}
+
+	if (total > 0)
+		ubus_api.security_event(deltas);
+}
+
 function print_stats() {
 	let s = udnsfilter.stats_get();
 
@@ -64,6 +92,8 @@ function print_stats() {
 	printf("Forwarded: %d\n", s.forwarded_queries);
 	printf("Upstream errors: %d\n", s.upstream_errors);
 	printf("------------------\n\n");
+
+	security_report(s);
 }
 
 function shutdown() {
