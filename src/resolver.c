@@ -93,6 +93,34 @@ static void server_state_cb(const char *server_string, ares_bool_t server_succes
 static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events);
 
 /**
+ * resolver_timeout_schedule() - Arm the uloop timer for c-ares timeouts
+ * @ctx: Resolver context
+ *
+ * c-ares only enforces retries and query timeouts inside
+ * ares_process_fd(), so a timer must fire when the earliest pending
+ * timeout is due; fd events alone stall when an upstream stays silent.
+ */
+static void resolver_timeout_schedule(struct resolver_ctx *ctx)
+{
+	struct timeval tv;
+
+	if (!ares_timeout(ctx->channel, NULL, &tv)) {
+		uloop_timeout_cancel(&ctx->timeout);
+		return;
+	}
+
+	uloop_timeout_set(&ctx->timeout, tv.tv_sec * 1000 + tv.tv_usec / 1000 + 1);
+}
+
+static void resolver_timeout_cb(struct uloop_timeout *timeout)
+{
+	struct resolver_ctx *ctx = container_of(timeout, struct resolver_ctx, timeout);
+
+	ares_process_fd(ctx->channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+	resolver_timeout_schedule(ctx);
+}
+
+/**
  * sock_state_cb() - Manage c-ares socket events in uloop
  * @data: Resolver context
  * @socket_fd: Socket file descriptor
@@ -167,7 +195,7 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 	opts.sock_state_cb = sock_state_cb;
 	opts.sock_state_cb_data = ctx;
 	opts.qcache_max_ttl = cache_ttl;
-	optmask = ARES_OPT_FLAGS | ARES_OPT_TIMEOUT | ARES_OPT_TRIES |
+	optmask = ARES_OPT_FLAGS | ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES |
 	          ARES_OPT_SOCK_STATE_CB | ARES_OPT_QUERY_CACHE;
 
 	if (rotation)
@@ -185,6 +213,7 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 
 	ctx->rotation_enabled = rotation;
 	ctx->cache_ttl = cache_ttl;
+	ctx->timeout.cb = resolver_timeout_cb;
 
 	return 0;
 }
@@ -200,6 +229,8 @@ void resolver_cleanup(struct resolver_ctx *ctx)
 
 	if (!ctx)
 		return;
+
+	uloop_timeout_cancel(&ctx->timeout);
 
 	/* ares_destroy() closes sockets, which unregisters and frees their
 	 * resolver_fd entries through sock_state_cb; only leftovers remain. */
@@ -297,6 +328,7 @@ static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events)
 		write_fd = ufd->fd;
 
 	ares_process_fd(global_ctx.resolver.channel, read_fd, write_fd);
+	resolver_timeout_schedule(&global_ctx.resolver);
 }
 
 /**
@@ -411,6 +443,8 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 		free(data);
 		return -1;
 	}
+
+	resolver_timeout_schedule(ctx);
 
 	return 0;
 }
