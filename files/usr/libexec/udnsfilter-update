@@ -6,17 +6,26 @@ import * as log from 'log';
 import * as uloop from 'uloop';
 import * as fs from 'fs';
 
-const DATA_DIR = '/var/lib/udnsfilter';
-
 log.ulog_open(log.ULOG_SYSLOG);
 
-function ensure_dir(path) {
-	if (!fs.access(path, 'r')) {
-		if (!fs.mkdir(path, 0755)) {
-			log.ulog('LOG_ERR', `Failed to create directory: ${path}`);
+function dir_ensure(path) {
+	let parts = split(path, '/');
+	let current = '';
+
+	for (let part in parts) {
+		if (part == '')
+			continue;
+
+		current += '/' + part;
+		if (fs.stat(current))
+			continue;
+
+		if (!fs.mkdir(current, 0755)) {
+			log.ulog('LOG_ERR', `Failed to create directory: ${current}`);
 			return false;
 		}
 	}
+
 	return true;
 }
 
@@ -66,11 +75,7 @@ function spawn_download(url, dest_path, on_complete) {
 }
 
 function update_filters() {
-	if (!ensure_dir(DATA_DIR)) {
-		exit(2);
-	}
-
-	const cursor = uci.cursor();
+	const cursor = uci.cursor(ARGV[0]);
 	if (!cursor) {
 		log.ulog('LOG_ERR', 'Failed to create UCI cursor');
 		exit(2);
@@ -97,6 +102,11 @@ function update_filters() {
 
 		if (!url || !path) {
 			log.ulog('LOG_WARNING', `Filter ${display_name} missing url or path`);
+			return;
+		}
+
+		if (!dir_ensure(fs.dirname(path))) {
+			log.ulog('LOG_WARNING', `Cannot create directory for ${display_name}`);
 			return;
 		}
 
