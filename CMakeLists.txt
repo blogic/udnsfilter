@@ -88,6 +88,7 @@ install(FILES
 	lib/udnsfilter/filter.uc
 	lib/udnsfilter/query.uc
 	lib/udnsfilter/tracking.uc
+	lib/udnsfilter/ubus_api.uc
 	DESTINATION share/ucode/udnsfilter
 )
 

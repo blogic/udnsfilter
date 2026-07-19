@@ -2,128 +2,13 @@
 'use strict';
 
 import * as uloop from 'uloop';
-import * as ubus from 'ubus';
 import * as udnsfilter from 'udnsfilter';
 import * as filter from 'udnsfilter.filter';
 import * as config_mod from 'udnsfilter.config';
-import * as tracking from 'udnsfilter.tracking';
 import * as query from 'udnsfilter.query';
+import * as ubus_api from 'udnsfilter.ubus_api';
 
 let config = config_mod.load(ARGV[0]);
-
-let ubus_conn;
-let ubus_obj;
-
-function filters_load() {
-	if (!config.filter_enabled)
-		return null;
-
-	return filter.load(config.confdir);
-}
-
-function ubus_init() {
-	ubus_conn = ubus.connect();
-	if (!ubus_conn)
-		return false;
-
-	ubus_obj = ubus_conn.publish('udnsfilter', {
-		stats: {
-			call: function(req) {
-				let c_stats = udnsfilter.stats_get();
-				return {
-					total_queries: c_stats.total_queries || 0,
-					blocked_queries: c_stats.blocked_queries || 0,
-					allowed_queries: c_stats.allowed_queries || 0,
-					forwarded_queries: c_stats.forwarded_queries || 0,
-					upstream_errors: c_stats.upstream_errors || 0
-				};
-			},
-			args: {}
-		},
-		reinit: {
-			call: function(req) {
-				if (!udnsfilter.reinit())
-					return { success: false, error: "ares_reinit failed" };
-
-				return { success: true };
-			},
-			args: {}
-		},
-		servers: {
-			call: function(req) {
-				return udnsfilter.get_server_states();
-			},
-			args: {}
-		},
-		reload_filter: {
-			call: function(req) {
-				if (!config.filter_enabled)
-					return { success: false, error: "filtering not enabled" };
-
-				let result = filters_load();
-				if (!result)
-					return { success: false, error: "failed to load filter lists" };
-
-				return {
-					success: true,
-					rules_loaded: result.total_rules,
-					filters: result.loaded_filters
-				};
-			},
-			args: {}
-		},
-		reset_stats: {
-			call: function(req) {
-				udnsfilter.stats_reset();
-				return { success: true };
-			},
-			args: {}
-		},
-		filters: {
-			call: function(req) {
-				return filter.status() ?? {};
-			},
-			args: {}
-		},
-		tracking: {
-			call: function(req) {
-				let ip = req.args?.ip;
-				let enable = req.args?.enable;
-
-				if (!ip)
-					return tracking.tracked();
-
-				if (enable) {
-					if (!tracking.track(ip))
-						return { success: false, error: "too many tracked addresses" };
-					return { success: true, tracking: ip };
-				}
-
-				tracking.untrack(ip);
-				return { success: true, stopped: ip };
-			},
-			args: {
-				ip: "127.0.0.1",
-				enable: true
-			}
-		},
-		domains: {
-			call: function(req) {
-				return tracking.domains();
-			},
-			args: {}
-		}
-	});
-
-	return ubus_obj != null;
-}
-
-function ubus_cleanup() {
-	if (ubus_obj)
-		ubus_obj.remove();
-	if (ubus_conn)
-		ubus_conn.disconnect();
-}
 
 function init() {
 	printf("Initialising udnsfilter...\n");
@@ -151,14 +36,14 @@ function init() {
 
 	udnsfilter.rebind_protection(config.rebind_protection, config.rebind_domains);
 
-	if (!ubus_init()) {
+	if (!ubus_api.publish(config)) {
 		printf("Warning: Failed to initialise ubus\n");
 	} else {
 		printf("ubus interface registered\n");
 	}
 
 	if (config.filter_enabled) {
-		let result = filters_load();
+		let result = filter.load(config.confdir);
 		if (result)
 			printf("Loaded %d filter rules from %d lists\n",
 			       result.total_rules, result.loaded_filters);
@@ -186,7 +71,7 @@ function shutdown() {
 
 	print_stats();
 
-	ubus_cleanup();
+	ubus_api.cleanup();
 	udnsfilter.shutdown();
 
 	uloop.end();
