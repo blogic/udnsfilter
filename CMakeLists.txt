@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(udnsfilter C)
 
-add_definitions(-Os -ggdb -Wall -Werror --std=gnu11 -Wmissing-declarations -Wno-unused-parameter)
+add_compile_options(-Os -ggdb -Wall -Werror --std=gnu11 -Wmissing-declarations -Wno-unused-parameter)
 
 set(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
 
@@ -53,6 +53,9 @@ set_target_properties(udnsfilter PROPERTIES
 	LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 target_link_libraries(udnsfilter ${LIBS})
+target_compile_definitions(udnsfilter PRIVATE
+	DOH_PROXY_PATH="${CMAKE_INSTALL_PREFIX}/bin/doh_proxy"
+)
 
 # Build doh_proxy standalone executable
 add_executable(doh_proxy
@@ -70,17 +73,14 @@ install(TARGETS doh_proxy
 	RUNTIME DESTINATION bin
 )
 
-install(FILES
-	lib/main.uc
-	lib/config.uc
-	lib/filter.uc
-	lib/matcher.uc
-	lib/resolver.uc
-	lib/stats.uc
-	lib/query.uc
-	lib/response.uc
-	lib/ubus_api.uc
-	DESTINATION share/udnsfilter
+install(PROGRAMS
+	udnsfilter
+	DESTINATION bin
+)
+
+install(PROGRAMS
+	files/usr/libexec/udnsfilter-update
+	DESTINATION libexec
 )
 
 # Testing
