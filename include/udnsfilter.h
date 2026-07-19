@@ -13,7 +13,8 @@
 
 /* DNS Constants */
 #define DNS_PORT 53
-#define DNS_MAX_PACKET_SIZE 512
+#define DNS_MAX_PACKET_SIZE 512   /* Classic UDP payload limit (RFC 1035) */
+#define DNS_MAX_QUERY_SIZE 4096   /* Receive limit; EDNS0 queries exceed 512 */
 #define DNS_MAX_NAME_LENGTH 253
 #define DNS_MAX_LABEL_LENGTH 63
 

@@ -21,7 +21,7 @@
 
 #include "doh_proxy.h"
 
-#define DOH_MAX_PACKET_SIZE 512
+#define DOH_MAX_PACKET_SIZE 4096
 #define DOH_MAX_PENDING_REQUESTS 1024
 
 struct pending_request {

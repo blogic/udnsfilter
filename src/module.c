@@ -755,7 +755,7 @@ uc_udnsfilter_forward_query(uc_vm_t *vm, size_t nargs)
 	socklen_t client_addrlen;
 	const char *addr_str, *family_str, *domain;
 	int port;
-	uint8_t query_data[DNS_MAX_PACKET_SIZE];
+	uint8_t query_data[DNS_MAX_QUERY_SIZE];
 	size_t query_len;
 
 	if (ucv_type(client_val) != UC_OBJECT || ucv_type(packet_val) != UC_OBJECT)

@@ -216,7 +216,7 @@ int packet_parse(struct dns_packet *pkt, const uint8_t *data, size_t len)
 		return -1;
 	}
 
-	if (len > DNS_MAX_PACKET_SIZE) {
+	if (len > DNS_MAX_QUERY_SIZE) {
 		udns_set_error("Packet too large");
 		return -1;
 	}
@@ -330,7 +330,7 @@ int packet_build_servfail(struct dns_packet *response, uint16_t query_id)
 	if (!response)
 		return -1;
 
-	buf = malloc(DNS_MAX_PACKET_SIZE);
+	buf = malloc(sizeof(struct dns_header));
 	if (!buf) {
 		udns_set_error("Out of memory");
 		return -1;
@@ -348,7 +348,7 @@ int packet_build_servfail(struct dns_packet *response, uint16_t query_id)
 
 	response->data = buf;
 	response->len = sizeof(struct dns_header);
-	response->capacity = DNS_MAX_PACKET_SIZE;
+	response->capacity = sizeof(struct dns_header);
 
 	return 0;
 }

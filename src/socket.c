@@ -43,7 +43,7 @@ struct udns_socket *udns_socket_for_client(struct sockaddr_storage *client_addr)
 static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 {
 	struct udns_socket *sock = container_of(ufd, struct udns_socket, ufd);
-	uint8_t buffer[DNS_MAX_PACKET_SIZE];
+	uint8_t buffer[DNS_MAX_QUERY_SIZE];
 	struct sockaddr_storage from;
 	socklen_t from_len = sizeof(from);
 	ssize_t len;
