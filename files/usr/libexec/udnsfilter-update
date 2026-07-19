@@ -26,7 +26,7 @@ function spawn_download(url, dest_path, on_complete) {
 	log.ulog('LOG_INFO', `Downloading ${url}`);
 
 	const proc = uloop.process('/usr/bin/wget',
-		['-q', '-O', temp_path, url],
+		['-q', '-T', '60', '-O', temp_path, url],
 		null,
 		(exitcode) => {
 			if (exitcode != 0) {
