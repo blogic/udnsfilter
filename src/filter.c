@@ -108,6 +108,9 @@ static void hashtable_insert(struct filter_hashtable *ht, struct filter_rule *ru
 static struct filter_rule *hashtable_lookup(struct filter_hashtable *ht,
                                             const char *domain)
 {
+	if (!ht)
+		return NULL;
+
 	uint32_t hash = hash_string(domain);
 	size_t bucket = hash % ht->size;
 	struct filter_rule *rule;
@@ -183,6 +186,13 @@ int filter_add_rule(struct filter_ctx *ctx, const char *pattern)
 
 	if (!ctx || !pattern || !*pattern)
 		return -1;
+
+	/* The exported module ABI can reach this before socket_create() has run
+	 * filter_init(); refuse rather than dereference a NULL hashtable. */
+	if (!ctx->exact_ht || !ctx->suffix_ht) {
+		udns_set_error("Filter not initialised");
+		return -1;
+	}
 
 	size_t pattern_len = strlen(pattern);
 
