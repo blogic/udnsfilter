@@ -84,6 +84,7 @@ install(PROGRAMS
 )
 
 install(FILES
+	lib/udnsfilter/config.uc
 	lib/udnsfilter/filter.uc
 	DESTINATION share/ucode/udnsfilter
 )
