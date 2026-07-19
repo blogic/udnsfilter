@@ -13,7 +13,6 @@
 #include <strings.h>
 #include <unistd.h>
 #include <errno.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -487,25 +486,6 @@ void doh_proxy_cleanup(struct doh_proxy_ctx *ctx)
 }
 
 static struct doh_proxy_ctx proxy_ctx;
-static volatile int should_exit = 0;
-
-static void check_exit_cb(struct uloop_timeout *timeout)
-{
-	if (should_exit) {
-		uloop_end();
-		return;
-	}
-	uloop_timeout_set(timeout, 100);
-}
-
-static struct uloop_timeout exit_timer = {
-	.cb = check_exit_cb
-};
-
-static void signal_handler(int sig)
-{
-	should_exit = 1;
-}
 
 static void print_usage(const char *prog)
 {
@@ -538,10 +518,9 @@ int main(int argc, char **argv)
 	port = (int)port_long;
 
 	curl_global_init(CURL_GLOBAL_ALL);
-	uloop_init();
 
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
+	/* uloop_init() installs SIGINT/SIGTERM handlers that cancel the loop */
+	uloop_init();
 
 	printf("Starting DNS-to-DoH proxy...\n");
 	printf("Listening on %s:%d\n", listen_addr, port);
@@ -556,7 +535,6 @@ int main(int argc, char **argv)
 
 	printf("Proxy ready\n");
 
-	uloop_timeout_set(&exit_timer, 100);
 	uloop_run();
 
 	printf("\nShutting down...\n");
