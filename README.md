@@ -23,8 +23,13 @@ uDNS Filter provides DNS-based content filtering and query forwarding for OpenWr
 ### Components
 
 - **udnsfilter.so**: Ucode module providing the core DNS engine (sockets, TCP transport, resolver, filter matching)
-- **udnsfilter.filter** (`lib/udnsfilter/filter.uc`): Ucode module owning filter list configuration and state; parses the UCI filter sections and drives the C engine through its path-based API
-- **udnsfilter**: Ucode launcher script reading UCI configuration and publishing the ubus interface
+- **lib/udnsfilter/** ucode modules (installed to `share/ucode/udnsfilter/`, imported as `udnsfilter.<name>`):
+  - `config.uc`: defaults and the `config main` UCI parsing
+  - `filter.uc`: filter list configuration and state; drives the C engine through its path-based API
+  - `query.uc`: per-query decision (match, counters, block or forward), registered directly as the engine callback
+  - `tracking.uc`: bounded global and per-address domain counters
+  - `ubus_api.uc`: the published ubus object
+- **udnsfilter**: thin launcher wiring the modules together
 - **doh_proxy**: Standalone binary that converts standard DNS queries to DoH requests
 - **c-ares**: Embedded DNS resolver library for upstream query forwarding
 
@@ -127,5 +132,7 @@ The `udnsfilter.filter` ucode module (configuration and state) exports:
 - `lists([confdir])`: parsed UCI filter sections as `{section, name, url, path, enabled}` entries
 - `load([confdir])`: clear the engine and load all enabled lists; returns `{total_rules, loaded_filters, filters[], loaded_at}` or null if the configuration is unreadable (active rules stay untouched)
 - `status()`: result of the last `load()`
+
+Supporting modules: `udnsfilter.config` (`load(confdir)` returning the daemon configuration), `udnsfilter.query` (`init(config)`, `handle(packet, client)`), `udnsfilter.tracking` (`domain_hit()`, `track()`, `untrack()`, `tracked()`, `domains()`) and `udnsfilter.ubus_api` (`publish(config)`, `cleanup()`).
 
 The engine knows nothing about UCI; all configuration parsing happens in ucode.
