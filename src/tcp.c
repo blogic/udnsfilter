@@ -58,6 +58,34 @@ static struct tcp_conn *conn_find(uint32_t id)
 	return NULL;
 }
 
+static bool addr_same_host(const struct sockaddr_storage *a,
+                           const struct sockaddr_storage *b)
+{
+	if (a->ss_family != b->ss_family)
+		return false;
+
+	if (a->ss_family == AF_INET)
+		return ((const struct sockaddr_in *)a)->sin_addr.s_addr ==
+		       ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+
+	return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr,
+	              &((const struct sockaddr_in6 *)b)->sin6_addr,
+	              sizeof(struct in6_addr)) == 0;
+}
+
+static int conn_host_count(const struct sockaddr_storage *addr)
+{
+	struct tcp_conn *conn;
+	int count = 0;
+
+	for (conn = conns; conn; conn = conn->next) {
+		if (addr_same_host(&conn->addr, addr))
+			count++;
+	}
+
+	return count;
+}
+
 static void conn_close(struct tcp_conn *conn)
 {
 	struct tcp_conn **prev;
@@ -302,6 +330,12 @@ static void listen_cb(struct uloop_fd *ufd, unsigned int events)
 		return;
 
 	if (conn_count >= TCP_MAX_CONNS) {
+		close(fd);
+		return;
+	}
+
+	if (udns_security.max_tcp_per_client &&
+	    conn_host_count(&addr) >= (int)udns_security.max_tcp_per_client) {
 		close(fd);
 		return;
 	}

@@ -35,6 +35,7 @@ struct resolver_fd {
 };
 
 static struct server_state *server_states = NULL;
+static unsigned int pending_count;
 
 struct rebind_domain {
 	char *domain;
@@ -255,6 +256,7 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 		return -1;
 
 	memset(ctx, 0, sizeof(*ctx));
+	pending_count = 0;
 
 	memset(&opts, 0, sizeof(opts));
 	opts.flags = ARES_FLAG_NOCHECKRESP;
@@ -502,9 +504,42 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 	if (response_buf)
 		ares_free_string(response_buf);
 
+	if (pending_count > 0)
+		pending_count--;
+
 	free(data->query_data);
 	free(data->domain);
 	free(data);
+}
+
+/**
+ * overload_servfail_send() - Answer a query dropped at the pending cap
+ * @sock: Socket for a UDP client
+ * @client_addr: Client address
+ * @client_addrlen: Client address length
+ * @tcp_conn_id: TCP connection id, 0 for UDP
+ * @query_id: Original query id
+ *
+ * Sends SERVFAIL directly so an overloaded resolver still answers rather
+ * than leaving the client to time out.
+ */
+static void overload_servfail_send(struct udns_socket *sock,
+                                   struct sockaddr_storage *client_addr,
+                                   socklen_t client_addrlen,
+                                   uint32_t tcp_conn_id, uint16_t query_id)
+{
+	struct dns_packet response;
+
+	if (packet_build_rcode(&response, query_id, DNS_RCODE_SERVFAIL) < 0)
+		return;
+
+	if (tcp_conn_id)
+		udns_tcp_send(tcp_conn_id, response.data, response.len);
+	else
+		udns_socket_send(sock, response.data, response.len,
+		                 (struct sockaddr *)client_addr, client_addrlen);
+
+	free(response.data);
 }
 
 /**
@@ -560,6 +595,14 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 	if (packet_parse(&pkt, query_data, query_len) < 0)
 		return -1;
 
+	if (udns_security.max_pending && pending_count >= udns_security.max_pending) {
+		overload_servfail_send(sock, client_addr, client_addrlen,
+		                       tcp_conn_id, pkt.id);
+		global_ctx.stats.overload_dropped++;
+		free(pkt.data);
+		return -1;
+	}
+
 	status = ares_dns_parse(query_data, query_len, 0, &dnsrec);
 	if (status != ARES_SUCCESS) {
 		udns_set_error("ares_dns_parse failed: %s", ares_strerror(status));
@@ -613,6 +656,7 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 		return -1;
 	}
 
+	pending_count++;
 	resolver_timeout_schedule(ctx);
 
 	return 0;

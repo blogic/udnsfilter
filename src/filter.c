@@ -255,6 +255,14 @@ int filter_load_file(struct filter_ctx *ctx, const char *path)
 		char *p = line;
 		size_t line_len = strlen(line);
 
+		if (udns_security.max_filter_rules &&
+		    ctx->total_count >= udns_security.max_filter_rules) {
+			udns_set_error("Filter rule limit reached");
+			fprintf(stderr, "Filter rule limit (%u) reached loading %s\n",
+			        udns_security.max_filter_rules, path);
+			break;
+		}
+
 		/* Skip overly long lines */
 		if (line_len > 0 && line[line_len - 1] != '\n' && !feof(f)) {
 			int c;

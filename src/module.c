@@ -51,6 +51,9 @@ struct udns_security udns_security = {
 	.ratelimit_burst = 300,
 	.ratelimit_global = 1000,
 	.ratelimit_global_burst = 2000,
+	.max_pending = 2048,
+	.max_filter_rules = 262144,
+	.max_tcp_per_client = 8,
 };
 
 static char *doh_bootstrap;

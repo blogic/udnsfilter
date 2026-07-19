@@ -145,6 +145,7 @@ struct stats {
 	uint64_t malformed_queries;
 	uint64_t refused_queries;
 	uint64_t rate_limited;
+	uint64_t overload_dropped;
 };
 
 /* Security configuration, adjustable from ucode; zero disables a limit */
@@ -154,6 +155,9 @@ struct udns_security {
 	unsigned int ratelimit_burst;
 	unsigned int ratelimit_global;
 	unsigned int ratelimit_global_burst;
+	unsigned int max_pending;
+	unsigned int max_filter_rules;
+	unsigned int max_tcp_per_client;
 };
 extern struct udns_security udns_security;
 
