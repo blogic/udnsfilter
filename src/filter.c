@@ -179,6 +179,13 @@ int filter_add_rule(struct filter_ctx *ctx, const char *pattern)
 		return -1;
 	}
 
+	struct filter_hashtable *ht = (type == FILTER_EXACT) ? ctx->exact_ht : ctx->suffix_ht;
+
+	if (hashtable_lookup(ht, clean_pattern)) {
+		free(clean_pattern);
+		return 1;
+	}
+
 	rule = calloc(1, sizeof(*rule));
 	if (!rule) {
 		free(clean_pattern);
@@ -190,7 +197,7 @@ int filter_add_rule(struct filter_ctx *ctx, const char *pattern)
 	rule->hash = hash_string(clean_pattern);
 	rule->type = type;
 
-	hashtable_insert(type == FILTER_EXACT ? ctx->exact_ht : ctx->suffix_ht, rule);
+	hashtable_insert(ht, rule);
 	ctx->total_count++;
 
 	return 0;
