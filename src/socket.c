@@ -178,19 +178,22 @@ static int create_socket(struct udns_socket *sock, const char *addr, int port, i
 /**
  * udns_socket_create() - Create IPv4 and IPv6 DNS sockets
  * @addr: IPv4 address to bind to
+ * @addr6: IPv6 address to bind to (NULL for the wildcard address)
  * @port: Port number
  *
  * Creates both IPv4 and IPv6 UDP sockets for receiving DNS queries.
- * IPv6 socket binds to ::1 (localhost).
  *
  * Return: 0 if at least one socket succeeds, -1 if both fail
  */
-int udns_socket_create(const char *addr, int port)
+int udns_socket_create(const char *addr, const char *addr6, int port)
 {
 	int ret4 = -1, ret6 = -1;
 
+	if (!addr6)
+		addr6 = "::";
+
 	ret4 = create_socket(&global_ctx.sock4, addr, port, AF_INET);
-	ret6 = create_socket(&global_ctx.sock6, "::1", port, AF_INET6);
+	ret6 = create_socket(&global_ctx.sock6, addr6, port, AF_INET6);
 
 	if (ret4 < 0 && ret6 < 0) {
 		udns_set_error("Failed to create any sockets");

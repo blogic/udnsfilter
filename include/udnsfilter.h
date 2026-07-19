@@ -168,7 +168,7 @@ int packet_build_servfail(struct dns_packet *response, uint16_t query_id);
 int packet_build_null_response(struct dns_packet *response, const struct dns_packet *query);
 
 /* socket.c - Socket handling */
-int udns_socket_create(const char *addr, int port);
+int udns_socket_create(const char *addr, const char *addr6, int port);
 void udns_socket_close(struct udns_socket *sock);
 int udns_socket_send(struct udns_socket *sock, const uint8_t *data, size_t len,
                      struct sockaddr *dest, socklen_t dest_len);

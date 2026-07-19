@@ -183,9 +183,10 @@ static void cleanup_proxies(void)
 /**
  * uc_udnsfilter_socket_create() - Create and bind DNS sockets
  * @vm: ucode VM instance
- * @nargs: Number of arguments (4)
+ * @nargs: Number of arguments (5)
  *
- * Arguments: address, port, rotation (optional), cache_ttl (optional)
+ * Arguments: address, port, rotation (optional), cache_ttl (optional),
+ *            address6 (optional, defaults to the wildcard address)
  *
  * Creates IPv4 and IPv6 UDP sockets for receiving DNS queries and initialises
  * the resolver and filter subsystems.
@@ -199,7 +200,9 @@ uc_udnsfilter_socket_create(uc_vm_t *vm, size_t nargs)
 	uc_value_t *port_val = uc_fn_arg(1);
 	uc_value_t *rotation_val = uc_fn_arg(2);
 	uc_value_t *cache_ttl_val = uc_fn_arg(3);
+	uc_value_t *addr6_val = uc_fn_arg(4);
 	const char *addr;
+	const char *addr6 = NULL;
 	int port;
 	bool rotation = true;
 	unsigned int cache_ttl = 3600;
@@ -216,7 +219,10 @@ uc_udnsfilter_socket_create(uc_vm_t *vm, size_t nargs)
 	if (cache_ttl_val && ucv_type(cache_ttl_val) == UC_INTEGER)
 		cache_ttl = ucv_uint64_get(cache_ttl_val);
 
-	if (udns_socket_create(addr, port) < 0)
+	if (addr6_val && ucv_type(addr6_val) == UC_STRING)
+		addr6 = ucv_string_get(addr6_val);
+
+	if (udns_socket_create(addr, addr6, port) < 0)
 		return NULL;
 
 	if (!global_ctx.initialized) {
