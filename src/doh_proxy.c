@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
@@ -22,7 +23,9 @@
 #include "doh_proxy.h"
 
 #define DOH_MAX_PACKET_SIZE 4096
+#define DOH_MAX_RESPONSE_SIZE 65535
 #define DOH_MAX_PENDING_REQUESTS 1024
+#define DNS_HEADER_SIZE 12
 
 struct pending_request {
 	struct doh_proxy_ctx *ctx;
@@ -58,6 +61,10 @@ static size_t doh_write_callback(void *ptr, size_t size, size_t nmemb, void *use
 
 	size_t total_size = size * nmemb;
 	size_t new_size = req->response_len + total_size;
+
+	/* Returning a short count aborts the transfer with a write error */
+	if (new_size > DOH_MAX_RESPONSE_SIZE)
+		return 0;
 
 	if (new_size > req->response_capacity) {
 		size_t new_capacity;
@@ -124,6 +131,37 @@ static void pending_request_remove(struct doh_proxy_ctx *ctx, struct pending_req
 }
 
 /**
+ * doh_response_valid() - Validate a completed DoH exchange
+ * @easy: Completed curl easy handle
+ * @req: Pending request holding the accumulated body
+ *
+ * A transport-level success may still carry an HTTP error page; only a
+ * 200 response with the DoH media type and a plausible DNS message
+ * length may be forwarded to the client.
+ *
+ * Return: true if the body is a DNS response, false otherwise
+ */
+static bool doh_response_valid(CURL *easy, struct pending_request *req)
+{
+	long http_status = 0;
+	char *content_type = NULL;
+
+	if (req->response_len < DNS_HEADER_SIZE)
+		return false;
+
+	curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_status);
+	if (http_status != 200)
+		return false;
+
+	curl_easy_getinfo(easy, CURLINFO_CONTENT_TYPE, &content_type);
+	if (!content_type ||
+	    strncasecmp(content_type, "application/dns-message", 23) != 0)
+		return false;
+
+	return true;
+}
+
+/**
  * check_multi_info() - Process completed curl transfers
  * @ctx: Proxy context
  *
@@ -145,12 +183,10 @@ static void check_multi_info(struct doh_proxy_ctx *ctx)
 		if (!req)
 			continue;
 
-		/* Send DNS response back to client if successful */
-		if (msg->data.result == CURLE_OK) {
-			if (req->response_len > 0) {
-				sendto(ctx->listen_fd, req->response_data, req->response_len, 0,
-				       (struct sockaddr *)&req->client_addr, req->client_addrlen);
-			}
+		if (msg->data.result == CURLE_OK &&
+		    doh_response_valid(msg->easy_handle, req)) {
+			sendto(ctx->listen_fd, req->response_data, req->response_len, 0,
+			       (struct sockaddr *)&req->client_addr, req->client_addrlen);
 		}
 
 		pending_request_remove(ctx, req);
