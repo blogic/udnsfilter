@@ -13,8 +13,9 @@ uDNS Filter provides DNS-based content filtering and query forwarding for OpenWr
 - **UDP and TCP**: Both transports on IPv4 and IPv6 (RFC 7766); oversized UDP answers are truncated with TC set according to the client's advertised EDNS0 payload size
 - **DNS-over-HTTPS Support**: Automatically spawns DoH proxy processes for encrypted DNS, with optional bootstrap pinning for hostname endpoints
 - **Server Health Monitoring**: Tracks upstream server health with automatic failover, retries, and query timeouts
-- **Query Statistics**: Real-time tracking of queries, blocks, and upstream errors over ubus
+- **Query Statistics**: Real-time tracking of queries, blocks, upstream errors, and dropped abuse over ubus
 - **DNS Rebind Protection**: Blocks upstream answers containing private addresses, with a per-domain allowlist for legitimate split-horizon names
+- **Abuse Mitigation**: Query pre-validation, per-client and global rate limiting, resource caps (pending queries, filter rules, TCP connections per client), and upstream anti-spoofing (source-port rotation, optional DNS 0x20). See [Security Limits](#security-limits).
 - **Event Loop Integration**: Native libubox/uloop integration
 - **Privilege Separation**: Drops root privileges after socket binding
 
@@ -31,7 +32,7 @@ uDNS Filter provides DNS-based content filtering and query forwarding for OpenWr
   - `ubus_api.uc`: the published ubus object
 - **udnsfilter**: thin launcher wiring the modules together
 - **doh_proxy**: Standalone binary that converts standard DNS queries to DoH requests
-- **c-ares**: Embedded DNS resolver library for upstream query forwarding
+- **c-ares**: DNS resolver library for upstream query forwarding (a required checkout, not vendored; see [Building](#building))
 
 ### Filter Engine
 
@@ -45,7 +46,40 @@ Exact rules live in one hash table; subdomain and wildcard rules share a second 
 
 ### Blocked Responses
 
-Filtered domains are answered with a null address (0.0.0.0). Rebind-protected answers return NXDOMAIN. Upstream failures return SERVFAIL rather than leaving the client to time out.
+Filtered domains are answered with a null address (0.0.0.0). Rebind-protected answers return NXDOMAIN. Upstream failures, and queries refused because the pending-query cap is reached, return SERVFAIL rather than leaving the client to time out. Malformed or multi-question queries return FORMERR; `ANY` queries (when `block_any` is set) and unsupported opcodes return NOTIMP. Rate-limited UDP datagrams and responses arriving on the listener are dropped without a reply.
+
+## Building
+
+The C engine links against a c-ares checkout that is not vendored in this repository; the `c-ares/` directory is git-ignored and must be supplied before building.
+
+### Prerequisites
+
+- CMake and a C toolchain
+- Development files for libubox, libubus, ucode, and libcurl
+- The `ucode` interpreter (to run the launcher)
+
+### 1. Provide c-ares
+
+Check out c-ares (pinned to 1.34.5) into `c-ares/` and build it in-tree so that the shared library lands at `c-ares/lib/libcares.so` and the generated `ares_build.h` / `ares_config.h` headers sit at the `c-ares/` root, which is where `CMakeLists.txt` expects them:
+
+```sh
+git clone --branch v1.34.5 --depth 1 https://github.com/c-ares/c-ares.git
+cd c-ares
+cmake -DCARES_SHARED=ON -DCARES_STATIC=OFF .
+make
+cd ..
+```
+
+### 2. Build udnsfilter
+
+```sh
+cmake .
+make
+```
+
+This produces `udnsfilter.so` (the ucode module) and the `doh_proxy` binary. `make install` installs the module, the `doh_proxy` and `udnsfilter` launcher, the `udnsfilter-update` helper, and the `lib/udnsfilter/*.uc` modules under the CMake install prefix.
+
+On OpenWrt the package feed handles the c-ares dependency and these steps; the above is for building from a source checkout.
 
 ## Configuration
 
@@ -132,7 +166,7 @@ Comments (`#` and `!`) and blank lines are ignored.
 
 The launcher publishes the `udnsfilter` object:
 
-- `stats`: query counters (total, blocked, allowed, forwarded, upstream errors)
+- `stats`: query counters (total, blocked, allowed, forwarded, upstream errors, malformed, refused, rate limited, overload dropped, rebind blocked)
 - `reset_stats`: reset the counters
 - `servers`: upstream server health states, rotation flag, and cache TTL
 - `reload_filter`: clear and reload all enabled filter lists from UCI
@@ -141,11 +175,14 @@ The launcher publishes the `udnsfilter` object:
 - `tracking`: enable, disable, or dump per-client domain counters (bounded, at most 32 addresses)
 - `domains`: global replied and blocked domain counters (bounded)
 
+It also emits the `udnsfilter.security` event on each statistics interval, carrying the deltas of the malformed, rate-limited, rebind-blocked, and overload-dropped counters whenever any of them rose.
+
 ## Module API
 
 The `udnsfilter` ucode module (C engine) exports:
 
 - `socket_create(addr, port, [rotation], [cache_ttl], [addr6])`
+- `security_set(config)`: apply the security limits (rate limits, resource caps, `block_any`, `dns0x20`); call before `socket_create()` so resolver-level flags take effect
 - `set_callback('query', fn)`: fn receives (packet, client); client carries `transport` and, for TCP, a connection id
 - `set_upstream(servers, [bootstrap])`
 - `filter_load(path)`, `filter_clear()`, `filter_match(domain)`
@@ -160,6 +197,6 @@ The `udnsfilter.filter` ucode module (configuration and state) exports:
 - `load([confdir])`: clear the engine and load all enabled lists; returns `{total_rules, loaded_filters, filters[], loaded_at}` or null if the configuration is unreadable (active rules stay untouched)
 - `status()`: result of the last `load()`
 
-Supporting modules: `udnsfilter.config` (`load(confdir)` returning the daemon configuration), `udnsfilter.query` (`init(config)`, `handle(packet, client)`), `udnsfilter.tracking` (`domain_hit()`, `track()`, `untrack()`, `tracked()`, `domains()`) and `udnsfilter.ubus_api` (`publish(config)`, `cleanup()`).
+Supporting modules: `udnsfilter.config` (`load(confdir)` returning the daemon configuration, including the `security` sub-object), `udnsfilter.query` (`init(config)`, `handle(packet, client)`), `udnsfilter.tracking` (`domain_hit()`, `track()`, `untrack()`, `tracked()`, `domains()`) and `udnsfilter.ubus_api` (`publish(config)`, `security_event(data)`, `cleanup()`).
 
 The engine knows nothing about UCI; all configuration parsing happens in ucode.
