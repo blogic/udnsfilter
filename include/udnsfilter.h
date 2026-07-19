@@ -93,16 +93,6 @@ struct filter_ctx {
 	size_t total_count;
 };
 
-/* Query tracking for c-ares */
-struct pending_query {
-	struct sockaddr_storage client_addr;
-	socklen_t client_addrlen;
-	uint16_t query_id;
-	uint16_t original_id;
-	char *domain;
-	struct pending_query *next;
-};
-
 /* Server health tracking */
 struct server_state {
 	char address[INET6_ADDRSTRLEN + 8];
@@ -118,8 +108,6 @@ struct resolver_ctx {
 	int nfds;
 	int max_fds;
 	struct uloop_timeout timeout;
-	struct pending_query *queries;
-	int query_counter;
 	bool rotation_enabled;
 	unsigned int cache_ttl;
 };

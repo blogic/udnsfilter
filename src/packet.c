@@ -50,61 +50,39 @@ const char *udns_get_error(void)
 	return error_buf;
 }
 
-#define DNS_MAX_NAME_JUMPS 16
-
 /**
  * scan_name_length() - Calculate wire-format length of DNS name
  * @data: Packet data
  * @len: Packet length
  * @offset: Starting offset of name
  *
- * Calculates the number of bytes occupied by a DNS name in wire format,
- * handling compression pointers and detecting loops.
+ * Calculates the number of bytes occupied by a DNS name in wire format.
+ * A compression pointer terminates the name, so no pointer chasing is
+ * needed; dn_expand() performs the actual decompression with its own
+ * loop protection.
  *
  * Return: Length in bytes, or -1 on error
  */
 static int scan_name_length(const uint8_t *data, size_t len, size_t offset)
 {
 	size_t pos = offset;
-	size_t start_pos = offset;
-	int jump_count = 0;
-	uint8_t visited[DNS_MAX_PACKET_SIZE / 8] = {0};
 
 	while (pos < len) {
 		uint8_t label_len = data[pos];
 
-		/* Null terminator - end of name */
 		if (label_len == 0)
-			return pos - start_pos + 1;
+			return pos - offset + 1;
 
-		/* Compression pointer: top 2 bits set */
 		if ((label_len & 0xc0) == 0xc0) {
 			if (pos + 1 >= len)
 				return -1;
-
-			/* Limit jumps to prevent infinite loops */
-			if (++jump_count > DNS_MAX_NAME_JUMPS)
-				return -1;
-
-			/* Track visited positions to detect loops */
-			size_t byte_idx = pos / 8;
-			uint8_t bit_mask = 1 << (pos % 8);
-			if (byte_idx < sizeof(visited) && (visited[byte_idx] & bit_mask))
-				return -1;
-			if (byte_idx < sizeof(visited))
-				visited[byte_idx] |= bit_mask;
-
-			/* Compression pointer is always 2 bytes */
-			return pos - start_pos + 2;
+			return pos - offset + 2;
 		}
 
 		if (label_len > DNS_MAX_LABEL_LENGTH)
 			return -1;
 
-		/* Skip label and its length byte */
 		pos += label_len + 1;
-		if (pos > len)
-			return -1;
 	}
 
 	return -1;

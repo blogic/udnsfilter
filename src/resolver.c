@@ -201,17 +201,10 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
  */
 void resolver_cleanup(struct resolver_ctx *ctx)
 {
-	struct pending_query *query, *tmp;
 	struct server_state *state, *state_tmp;
 
 	if (!ctx)
 		return;
-
-	for (query = ctx->queries; query; query = tmp) {
-		tmp = query->next;
-		free(query->domain);
-		free(query);
-	}
 
 	for (int i = 0; i < ctx->nfds; i++) {
 		if (ctx->fds[i].fd >= 0)
