@@ -167,13 +167,21 @@ int packet_parse_question(struct dns_packet *pkt, struct dns_question *q);
 int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *query);
 int packet_build_servfail(struct dns_packet *response, uint16_t query_id);
 int packet_build_null_response(struct dns_packet *response, const struct dns_packet *query);
+int packet_build_truncated(struct dns_packet *response, const uint8_t *query, size_t query_len);
 
 /* socket.c - Socket handling */
+int udns_sockaddr_build(const char *addr, int port, int family,
+                        struct sockaddr_storage *ss, socklen_t *addrlen);
 int udns_socket_create(const char *addr, const char *addr6, int port);
 void udns_socket_close(struct udns_socket *sock);
 int udns_socket_send(struct udns_socket *sock, const uint8_t *data, size_t len,
                      struct sockaddr *dest, socklen_t dest_len);
 struct udns_socket *udns_socket_for_client(struct sockaddr_storage *client_addr);
+
+/* tcp.c - TCP DNS transport (RFC 7766) */
+int udns_tcp_listen(const char *addr, const char *addr6, int port);
+void udns_tcp_close(void);
+int udns_tcp_send(uint32_t conn_id, const uint8_t *data, size_t len);
 
 /* resolver.c - c-ares integration */
 int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_ttl);
@@ -181,7 +189,7 @@ void resolver_cleanup(struct resolver_ctx *ctx);
 int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
                            const uint8_t *query_data, size_t query_len,
                            struct sockaddr_storage *client_addr, socklen_t client_addrlen,
-                           const char *domain);
+                           const char *domain, uint32_t tcp_conn_id);
 void resolver_set_servers(struct resolver_ctx *ctx, const char **servers, int count);
 int resolver_reinit(struct resolver_ctx *ctx);
 int resolver_get_server_states(struct server_state **states);
@@ -207,7 +215,8 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len);
 
 /* callback.c - ucode callback invocation */
 void udns_callback_query(struct dns_packet *pkt, struct sockaddr_storage *client_addr,
-                         socklen_t client_addrlen, const uint8_t *raw_data, size_t raw_len);
+                         socklen_t client_addrlen, const uint8_t *raw_data, size_t raw_len,
+                         uint32_t tcp_conn_id);
 
 /* Error handling */
 void udns_set_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

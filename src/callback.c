@@ -24,7 +24,8 @@
  * then invokes the registered query callback function.
  */
 void udns_callback_query(struct dns_packet *pkt, struct sockaddr_storage *client_addr,
-                         socklen_t client_addrlen, const uint8_t *raw_data, size_t raw_len)
+                         socklen_t client_addrlen, const uint8_t *raw_data, size_t raw_len,
+                         uint32_t tcp_conn_id)
 {
 	uc_value_t *pkt_obj, *client_obj, *questions_array, *raw_data_val;
 	struct dns_question question;
@@ -76,6 +77,10 @@ void udns_callback_query(struct dns_packet *pkt, struct sockaddr_storage *client
 		ucv_object_add(client_obj, "port", ucv_int64_new(ntohs(sin6->sin6_port)));
 		ucv_object_add(client_obj, "family", ucv_string_new("inet6"));
 	}
+
+	ucv_object_add(client_obj, "transport", ucv_string_new(tcp_conn_id ? "tcp" : "udp"));
+	if (tcp_conn_id)
+		ucv_object_add(client_obj, "conn", ucv_uint64_new(tcp_conn_id));
 
 	uc_vm_stack_push(global_ctx.vm, ucv_get(global_ctx.on_query));
 	uc_vm_stack_push(global_ctx.vm, ucv_get(pkt_obj));

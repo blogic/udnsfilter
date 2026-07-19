@@ -38,6 +38,7 @@ set(BINDING_SOURCES
 	src/module.c
 	src/packet.c
 	src/socket.c
+	src/tcp.c
 	src/resolver.c
 	src/filter.c
 	src/callback.c

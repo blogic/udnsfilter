@@ -22,6 +22,8 @@ struct query_callback_data {
 	struct sockaddr_storage client_addr;
 	socklen_t client_addrlen;
 	uint16_t original_id;
+	uint16_t max_udp_size;
+	uint32_t tcp_conn_id;
 	char *domain;
 	uint8_t *query_data;
 	size_t query_len;
@@ -333,6 +335,18 @@ static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events)
 	resolver_timeout_schedule(&global_ctx.resolver);
 }
 
+static void client_response_send(struct query_callback_data *data,
+                                 const uint8_t *buf, size_t len)
+{
+	if (data->tcp_conn_id) {
+		udns_tcp_send(data->tcp_conn_id, buf, len);
+		return;
+	}
+
+	udns_socket_send(data->sock, buf, len,
+	                 (struct sockaddr *)&data->client_addr, data->client_addrlen);
+}
+
 /**
  * rebind_response_send() - Answer a rebind-blocked query with NXDOMAIN
  * @data: Query callback data holding the original client query
@@ -351,10 +365,24 @@ static void rebind_response_send(struct query_callback_data *data)
 	memset(&response, 0, sizeof(response));
 
 	if (packet_build_nxdomain(&response, &query) > 0)
-		udns_socket_send(data->sock, response.data, response.len,
-		                 (struct sockaddr *)&data->client_addr, data->client_addrlen);
+		client_response_send(data, response.data, response.len);
 
 	free(query.data);
+	free(response.data);
+}
+
+/**
+ * truncated_response_send() - Tell a UDP client to retry over TCP
+ * @data: Query callback data holding the original client query
+ */
+static void truncated_response_send(struct query_callback_data *data)
+{
+	struct dns_packet response;
+
+	if (packet_build_truncated(&response, data->query_data, data->query_len) < 0)
+		return;
+
+	client_response_send(data, response.data, response.len);
 	free(response.data);
 }
 
@@ -385,19 +413,20 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 		global_ctx.stats.upstream_errors++;
 
 		if (packet_build_servfail(&response, data->original_id) == 0) {
-			udns_socket_send(data->sock, response.data, response.len,
-			                 (struct sockaddr *)&data->client_addr, data->client_addrlen);
+			client_response_send(data, response.data, response.len);
 			free(response.data);
 		}
 	} else if (dns_response_contains_private_ip(response_buf, response_len)) {
 		rebind_response_send(data);
+	} else if (!data->tcp_conn_id && response_len > data->max_udp_size) {
+		truncated_response_send(data);
+		global_ctx.stats.forwarded_queries++;
 	} else {
 		/* Restore original query ID */
 		uint16_t id_net = htons(data->original_id);
 		memcpy(response_buf, &id_net, 2);
 
-		udns_socket_send(data->sock, response_buf, response_len,
-		                (struct sockaddr *)&data->client_addr, data->client_addrlen);
+		client_response_send(data, response_buf, response_len);
 
 		global_ctx.stats.forwarded_queries++;
 	}
@@ -411,6 +440,32 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 }
 
 /**
+ * query_udp_size() - Advertised EDNS0 UDP payload size of a query
+ * @dnsrec: Parsed query record
+ *
+ * Return: OPT record UDP size clamped to at least 512, or 512 if the
+ *         query carries no OPT record
+ */
+static unsigned short query_udp_size(const ares_dns_record_t *dnsrec)
+{
+	size_t cnt = ares_dns_record_rr_cnt(dnsrec, ARES_SECTION_ADDITIONAL);
+
+	for (size_t i = 0; i < cnt; i++) {
+		const ares_dns_rr_t *rr =
+			ares_dns_record_rr_get_const(dnsrec, ARES_SECTION_ADDITIONAL, i);
+		unsigned short size;
+
+		if (!rr || ares_dns_rr_get_type(rr) != ARES_REC_TYPE_OPT)
+			continue;
+
+		size = ares_dns_rr_get_u16(rr, ARES_RR_OPT_UDP_SIZE);
+		return size < DNS_MAX_PACKET_SIZE ? DNS_MAX_PACKET_SIZE : size;
+	}
+
+	return DNS_MAX_PACKET_SIZE;
+}
+
+/**
  * resolver_forward_query() - Forward DNS query to upstream servers
  * @ctx: Resolver context
  * @sock: Socket for sending response
@@ -419,13 +474,14 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
  * @client_addr: Client address for response
  * @client_addrlen: Client address length
  * @domain: Domain name being queried
+ * @tcp_conn_id: TCP connection id, 0 for UDP clients
  *
  * Return: 0 on success, -1 on error
  */
 int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
                            const uint8_t *query_data, size_t query_len,
                            struct sockaddr_storage *client_addr, socklen_t client_addrlen,
-                           const char *domain)
+                           const char *domain, uint32_t tcp_conn_id)
 {
 	struct query_callback_data *data;
 	struct dns_packet pkt;
@@ -454,6 +510,8 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 	memcpy(&data->client_addr, client_addr, client_addrlen);
 	data->client_addrlen = client_addrlen;
 	data->original_id = pkt.id;
+	data->max_udp_size = query_udp_size(dnsrec);
+	data->tcp_conn_id = tcp_conn_id;
 	data->domain = strdup(domain);
 	if (!data->domain) {
 		ares_dns_record_destroy(dnsrec);

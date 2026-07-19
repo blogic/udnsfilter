@@ -237,6 +237,9 @@ uc_udnsfilter_socket_create(uc_vm_t *vm, size_t nargs)
 	if (udns_socket_create(addr, addr6, port) < 0)
 		return NULL;
 
+	if (udns_tcp_listen(addr, addr6, port) < 0)
+		fprintf(stderr, "Warning: no TCP listener: %s\n", udns_get_error());
+
 	if (!global_ctx.initialized) {
 		if (resolver_init(&global_ctx.resolver, rotation, cache_ttl) < 0) {
 			udns_socket_close(&global_ctx.sock4);
@@ -311,6 +314,7 @@ uc_udnsfilter_shutdown(uc_vm_t *vm, size_t nargs)
 
 	cleanup_proxies();
 
+	udns_tcp_close();
 	udns_socket_close(&global_ctx.sock4);
 	udns_socket_close(&global_ctx.sock6);
 	resolver_cleanup(&global_ctx.resolver);
@@ -679,12 +683,13 @@ uc_udnsfilter_send_blocked_response(uc_vm_t *vm, size_t nargs)
 {
 	uc_value_t *client_val = uc_fn_arg(0);
 	uc_value_t *packet_val = uc_fn_arg(1);
-	uc_value_t *addr_val, *port_val, *family_val, *raw_data_val;
+	uc_value_t *addr_val, *port_val, *family_val, *raw_data_val, *conn_val;
 	struct sockaddr_storage client_addr;
 	socklen_t client_addrlen;
 	struct dns_packet query, response;
 	const char *addr_str, *family_str, *raw_data_str;
 	size_t raw_len;
+	uint32_t conn_id = 0;
 	int port;
 
 	if (ucv_type(client_val) != UC_OBJECT || ucv_type(packet_val) != UC_OBJECT)
@@ -694,6 +699,10 @@ uc_udnsfilter_send_blocked_response(uc_vm_t *vm, size_t nargs)
 	port_val = ucv_object_get(client_val, "port", NULL);
 	family_val = ucv_object_get(client_val, "family", NULL);
 	raw_data_val = ucv_object_get(packet_val, "raw_data", NULL);
+
+	conn_val = ucv_object_get(client_val, "conn", NULL);
+	if (conn_val && ucv_type(conn_val) == UC_INTEGER)
+		conn_id = (uint32_t)ucv_uint64_get(conn_val);
 
 	if (ucv_type(addr_val) != UC_STRING || ucv_type(port_val) != UC_INTEGER ||
 	    ucv_type(family_val) != UC_STRING || ucv_type(raw_data_val) != UC_STRING)
@@ -733,8 +742,11 @@ uc_udnsfilter_send_blocked_response(uc_vm_t *vm, size_t nargs)
 		return NULL;
 	}
 
-	udns_socket_send(udns_socket_for_client(&client_addr), response.data, response.len,
-	                (struct sockaddr *)&client_addr, client_addrlen);
+	if (conn_id)
+		udns_tcp_send(conn_id, response.data, response.len);
+	else
+		udns_socket_send(udns_socket_for_client(&client_addr), response.data, response.len,
+		                (struct sockaddr *)&client_addr, client_addrlen);
 
 	global_ctx.stats.blocked_queries++;
 
@@ -762,10 +774,11 @@ uc_udnsfilter_forward_query(uc_vm_t *vm, size_t nargs)
 	uc_value_t *client_val = uc_fn_arg(0);
 	uc_value_t *packet_val = uc_fn_arg(1);
 	uc_value_t *addr_val, *port_val, *family_val, *questions_val, *question_val;
-	uc_value_t *name_val;
+	uc_value_t *name_val, *conn_val;
 	struct sockaddr_storage client_addr;
 	socklen_t client_addrlen;
 	const char *addr_str, *family_str, *domain;
+	uint32_t conn_id = 0;
 	int port;
 	uint8_t query_data[DNS_MAX_QUERY_SIZE];
 	size_t query_len;
@@ -776,6 +789,10 @@ uc_udnsfilter_forward_query(uc_vm_t *vm, size_t nargs)
 	addr_val = ucv_object_get(client_val, "address", NULL);
 	port_val = ucv_object_get(client_val, "port", NULL);
 	family_val = ucv_object_get(client_val, "family", NULL);
+
+	conn_val = ucv_object_get(client_val, "conn", NULL);
+	if (conn_val && ucv_type(conn_val) == UC_INTEGER)
+		conn_id = (uint32_t)ucv_uint64_get(conn_val);
 
 	if (ucv_type(addr_val) != UC_STRING || ucv_type(port_val) != UC_INTEGER ||
 	    ucv_type(family_val) != UC_STRING)
@@ -826,7 +843,7 @@ uc_udnsfilter_forward_query(uc_vm_t *vm, size_t nargs)
 
 	if (resolver_forward_query(&global_ctx.resolver, udns_socket_for_client(&client_addr),
 	                           query_data, query_len,
-	                           &client_addr, client_addrlen, domain) < 0)
+	                           &client_addr, client_addrlen, domain, conn_id) < 0)
 		return NULL;
 
 	global_ctx.stats.allowed_queries++;

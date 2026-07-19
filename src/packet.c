@@ -444,6 +444,59 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 }
 
 /**
+ * packet_build_truncated() - Build a TC response from the original query
+ * @response: Response packet structure to fill
+ * @query: Wire-format client query
+ * @query_len: Query length
+ *
+ * Builds a header-plus-question response with the TC bit set, telling
+ * the client to retry over TCP because the full answer exceeds its
+ * advertised UDP payload size.
+ *
+ * Return: 0 on success, -1 on error
+ */
+int packet_build_truncated(struct dns_packet *response, const uint8_t *query, size_t query_len)
+{
+	struct dns_header *hdr;
+	uint16_t qdcount;
+	size_t len;
+
+	if (!response || !query || query_len < sizeof(struct dns_header))
+		return -1;
+
+	qdcount = ntohs(((const struct dns_header *)query)->questions);
+	len = sizeof(struct dns_header);
+
+	for (uint16_t i = 0; i < qdcount; i++) {
+		int qname_len = scan_name_length(query, query_len, len);
+
+		if (qname_len < 0 || len + qname_len + 4 > query_len)
+			return -1;
+		len += qname_len + 4;
+	}
+
+	memset(response, 0, sizeof(*response));
+
+	response->data = malloc(len);
+	if (!response->data) {
+		udns_set_error("Out of memory");
+		return -1;
+	}
+
+	memcpy(response->data, query, len);
+	response->len = len;
+	response->capacity = len;
+
+	hdr = (struct dns_header *)response->data;
+	hdr->flags = htons(DNS_FLAG_QR | DNS_FLAG_TC | DNS_FLAG_RD | DNS_FLAG_RA);
+	hdr->answers = 0;
+	hdr->authority = 0;
+	hdr->additional = 0;
+
+	return 0;
+}
+
+/**
  * packet_build() - Build DNS packet into wire format
  * @pkt: Packet structure with data
  * @buf: Output buffer

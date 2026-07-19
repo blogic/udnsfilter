@@ -19,6 +19,42 @@
 #include "internal.h"
 
 /**
+ * udns_sockaddr_build() - Build a bind address from string form
+ * @addr: Address string
+ * @port: Port number
+ * @family: AF_INET or AF_INET6
+ * @ss: Storage to fill
+ * @addrlen: Resulting address length
+ *
+ * Return: 0 on success, -1 on invalid address
+ */
+int udns_sockaddr_build(const char *addr, int port, int family,
+                        struct sockaddr_storage *ss, socklen_t *addrlen)
+{
+	memset(ss, 0, sizeof(*ss));
+
+	if (family == AF_INET) {
+		struct sockaddr_in *sin = (struct sockaddr_in *)ss;
+
+		sin->sin_family = AF_INET;
+		sin->sin_port = htons(port);
+		if (inet_pton(AF_INET, addr, &sin->sin_addr) <= 0)
+			return -1;
+		*addrlen = sizeof(*sin);
+		return 0;
+	}
+
+	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ss;
+
+	sin6->sin6_family = AF_INET6;
+	sin6->sin6_port = htons(port);
+	if (inet_pton(AF_INET6, addr, &sin6->sin6_addr) <= 0)
+		return -1;
+	*addrlen = sizeof(*sin6);
+	return 0;
+}
+
+/**
  * udns_socket_for_client() - Get appropriate socket for client address family
  * @client_addr: Client address
  *
@@ -84,7 +120,7 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 	}
 
 	/* Invoke ucode callback with query */
-	udns_callback_query(&pkt, &from, from_len, buffer, len);
+	udns_callback_query(&pkt, &from, from_len, buffer, len, 0);
 
 	free(pkt.data);
 }
@@ -133,30 +169,10 @@ static int create_socket(struct udns_socket *sock, const char *addr, int port, i
 		}
 	}
 
-	memset(&sock->bind_addr, 0, sizeof(sock->bind_addr));
-
-	if (family == AF_INET) {
-		sock->bind_addr.sin.sin_family = AF_INET;
-		sock->bind_addr.sin.sin_port = htons(port);
-
-		if (inet_pton(AF_INET, addr, &sock->bind_addr.sin.sin_addr) <= 0) {
-			udns_set_error("Invalid IPv4 address: %s", addr);
-			close(fd);
-			return -1;
-		}
-
-		addrlen = sizeof(sock->bind_addr.sin);
-	} else {
-		sock->bind_addr.sin6.sin6_family = AF_INET6;
-		sock->bind_addr.sin6.sin6_port = htons(port);
-
-		if (inet_pton(AF_INET6, addr, &sock->bind_addr.sin6.sin6_addr) <= 0) {
-			udns_set_error("Invalid IPv6 address: %s", addr);
-			close(fd);
-			return -1;
-		}
-
-		addrlen = sizeof(sock->bind_addr.sin6);
+	if (udns_sockaddr_build(addr, port, family, &sock->bind_addr.ss, &addrlen) < 0) {
+		udns_set_error("Invalid address: %s", addr);
+		close(fd);
+		return -1;
 	}
 
 	if (bind(fd, (struct sockaddr *)&sock->bind_addr, addrlen) < 0) {
