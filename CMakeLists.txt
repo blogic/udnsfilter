@@ -84,6 +84,11 @@ install(PROGRAMS
 	DESTINATION libexec
 )
 
+install(FILES
+	lib/udnsfilter/filter.uc
+	DESTINATION share/ucode/udnsfilter
+)
+
 # Testing
 if(UNIT_TESTING)
 	enable_testing()

@@ -5,6 +5,7 @@ import * as uloop from 'uloop';
 import * as ubus from 'ubus';
 import * as uci from 'uci';
 import * as udnsfilter from 'udnsfilter';
+import * as filter from 'udnsfilter.filter';
 
 const uci_dir = ARGV[0];
 
@@ -88,7 +89,7 @@ function filters_load() {
 	if (!config.filter_enabled)
 		return null;
 
-	return udnsfilter.filter_load_uci(uci_dir);
+	return filter.load(uci_dir);
 }
 
 function ubus_init() {
