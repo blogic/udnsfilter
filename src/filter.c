@@ -95,12 +95,30 @@ int filter_init(struct filter_ctx *ctx)
 	memset(ctx, 0, sizeof(*ctx));
 
 	ctx->exact_ht = hashtable_create(HASHTABLE_INITIAL_SIZE);
-	if (!ctx->exact_ht) {
+	ctx->suffix_ht = hashtable_create(HASHTABLE_INITIAL_SIZE);
+	if (!ctx->exact_ht || !ctx->suffix_ht) {
+		hashtable_destroy(ctx->exact_ht);
+		hashtable_destroy(ctx->suffix_ht);
+		memset(ctx, 0, sizeof(*ctx));
 		udns_set_error("Out of memory");
 		return -1;
 	}
 
 	return 0;
+}
+
+static void hashtable_clear(struct filter_hashtable *ht)
+{
+	size_t i;
+
+	if (!ht)
+		return;
+
+	for (i = 0; i < ht->size; i++) {
+		rule_list_free(ht->buckets[i]);
+		ht->buckets[i] = NULL;
+	}
+	ht->count = 0;
 }
 
 void filter_cleanup(struct filter_ctx *ctx)
@@ -109,33 +127,18 @@ void filter_cleanup(struct filter_ctx *ctx)
 		return;
 
 	hashtable_destroy(ctx->exact_ht);
-	rule_list_free(ctx->subdomain_rules);
-	rule_list_free(ctx->wildcard_rules);
+	hashtable_destroy(ctx->suffix_ht);
 
 	memset(ctx, 0, sizeof(*ctx));
 }
 
 void filter_clear(struct filter_ctx *ctx)
 {
-	size_t i;
-
 	if (!ctx)
 		return;
 
-	if (ctx->exact_ht) {
-		for (i = 0; i < ctx->exact_ht->size; i++) {
-			rule_list_free(ctx->exact_ht->buckets[i]);
-			ctx->exact_ht->buckets[i] = NULL;
-		}
-		ctx->exact_ht->count = 0;
-	}
-
-	rule_list_free(ctx->subdomain_rules);
-	rule_list_free(ctx->wildcard_rules);
-	ctx->subdomain_rules = NULL;
-	ctx->wildcard_rules = NULL;
-	ctx->subdomain_count = 0;
-	ctx->wildcard_count = 0;
+	hashtable_clear(ctx->exact_ht);
+	hashtable_clear(ctx->suffix_ht);
 	ctx->total_count = 0;
 }
 
@@ -143,71 +146,51 @@ int filter_add_rule(struct filter_ctx *ctx, const char *pattern)
 {
 	struct filter_rule *rule;
 	enum filter_rule_type type;
-	char *clean_pattern = NULL;
+	char *clean_pattern;
 
 	if (!ctx || !pattern || !*pattern)
 		return -1;
 
 	size_t pattern_len = strlen(pattern);
 
-	rule = calloc(1, sizeof(*rule));
-	if (!rule) {
+	/* Both ||domain^ and *.domain block the base domain and everything
+	 * below it, so they share the suffix table keyed by base domain. */
+	if (strncmp(pattern, "||", 2) == 0 && pattern_len > 3 && pattern[pattern_len - 1] == '^') {
+		clean_pattern = strndup(pattern + 2, pattern_len - 3);
+		type = FILTER_SUBDOMAIN;
+	} else if (pattern[0] == '*') {
+		const char *base = pattern + 1;
+
+		if (*base == '.')
+			base++;
+		if (!*base) {
+			udns_set_error("Invalid wildcard pattern");
+			return -1;
+		}
+		clean_pattern = strdup(base);
+		type = FILTER_WILDCARD;
+	} else {
+		clean_pattern = strdup(pattern);
+		type = FILTER_EXACT;
+	}
+
+	if (!clean_pattern) {
 		udns_set_error("Out of memory");
 		return -1;
 	}
 
-	if (strncmp(pattern, "||", 2) == 0 && pattern_len > 2 && pattern[pattern_len - 1] == '^') {
-		if (pattern_len < 3) {
-			udns_set_error("Invalid subdomain pattern");
-			free(rule);
-			return -1;
-		}
-		clean_pattern = strndup(pattern + 2, pattern_len - 3);
-		if (!clean_pattern) {
-			udns_set_error("Out of memory");
-			free(rule);
-			return -1;
-		}
-		type = FILTER_SUBDOMAIN;
-	} else if (pattern[0] == '*') {
-		clean_pattern = strdup(pattern);
-		if (!clean_pattern) {
-			udns_set_error("Out of memory");
-			free(rule);
-			return -1;
-		}
-		type = FILTER_WILDCARD;
-	} else {
-		clean_pattern = strdup(pattern);
-		if (!clean_pattern) {
-			udns_set_error("Out of memory");
-			free(rule);
-			return -1;
-		}
-		type = FILTER_EXACT;
+	rule = calloc(1, sizeof(*rule));
+	if (!rule) {
+		free(clean_pattern);
+		udns_set_error("Out of memory");
+		return -1;
 	}
 
 	rule->pattern = clean_pattern;
 	rule->hash = hash_string(clean_pattern);
 	rule->type = type;
-	rule->next = NULL;
 
-	switch (type) {
-	case FILTER_EXACT:
-		hashtable_insert(ctx->exact_ht, rule);
-		break;
-	case FILTER_SUBDOMAIN:
-		rule->next = ctx->subdomain_rules;
-		ctx->subdomain_rules = rule;
-		ctx->subdomain_count++;
-		break;
-	case FILTER_WILDCARD:
-		rule->next = ctx->wildcard_rules;
-		ctx->wildcard_rules = rule;
-		ctx->wildcard_count++;
-		break;
-	}
-
+	hashtable_insert(type == FILTER_EXACT ? ctx->exact_ht : ctx->suffix_ht, rule);
 	ctx->total_count++;
 
 	return 0;
@@ -273,37 +256,28 @@ int filter_load_file(struct filter_ctx *ctx, const char *path)
 bool filter_match(struct filter_ctx *ctx, const char *domain, struct filter_rule **matched)
 {
 	struct filter_rule *rule;
+	const char *suffix;
 
 	if (!ctx || !domain)
 		return false;
 
-	/* Fast path: hash table lookup for exact matches */
 	rule = hashtable_lookup(ctx->exact_ht, domain);
-	if (rule) {
-		if (matched)
-			*matched = rule;
-		return true;
+
+	/* Suffix rules match the base domain and every label boundary above it */
+	for (suffix = domain; !rule && suffix; ) {
+		rule = hashtable_lookup(ctx->suffix_ht, suffix);
+		suffix = strchr(suffix, '.');
+		if (suffix)
+			suffix++;
 	}
 
-	/* Check subdomain rules (e.g., ||example.com^) */
-	for (rule = ctx->subdomain_rules; rule; rule = rule->next) {
-		if (domain_match_subdomain(domain, rule->pattern)) {
-			if (matched)
-				*matched = rule;
-			return true;
-		}
-	}
+	if (!rule)
+		return false;
 
-	/* Check wildcard rules (e.g., *.example.com) */
-	for (rule = ctx->wildcard_rules; rule; rule = rule->next) {
-		if (domain_match_wildcard(domain, rule->pattern)) {
-			if (matched)
-				*matched = rule;
-			return true;
-		}
-	}
+	if (matched)
+		*matched = rule;
 
-	return false;
+	return true;
 }
 
 void filter_stats(struct filter_ctx *ctx, size_t *count)

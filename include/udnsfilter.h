@@ -85,11 +85,8 @@ struct filter_hashtable {
 
 /* Filter Context */
 struct filter_ctx {
-	struct filter_hashtable *exact_ht;     /* Hash table for exact matches */
-	struct filter_rule *subdomain_rules;   /* Linked list of subdomain rules */
-	struct filter_rule *wildcard_rules;    /* Linked list of wildcard rules */
-	size_t subdomain_count;
-	size_t wildcard_count;
+	struct filter_hashtable *exact_ht;   /* Full-domain rules */
+	struct filter_hashtable *suffix_ht;  /* ||domain^ and *.domain rules keyed by base domain */
 	size_t total_count;
 };
 
@@ -202,8 +199,6 @@ void filter_stats(struct filter_ctx *ctx, size_t *count);
 /* util.c - Utilities */
 uint32_t hash_string(const char *str);
 bool domain_match_exact(const char *domain, const char *pattern);
-bool domain_match_subdomain(const char *domain, const char *pattern);
-bool domain_match_wildcard(const char *domain, const char *pattern);
 const char *qtype_to_string(uint16_t qtype);
 bool is_private_ipv4(uint32_t ip);
 bool is_private_ipv6(const uint8_t *ip);
