@@ -86,6 +86,7 @@ install(PROGRAMS
 install(FILES
 	lib/udnsfilter/config.uc
 	lib/udnsfilter/filter.uc
+	lib/udnsfilter/query.uc
 	lib/udnsfilter/tracking.uc
 	DESTINATION share/ucode/udnsfilter
 )
