@@ -29,9 +29,8 @@ find_library(ubox NAMES ubox)
 find_library(ubus NAMES ubus)
 find_library(blobmsg_json NAMES blobmsg_json)
 find_library(ucode NAMES ucode)
-find_library(uci NAMES uci)
 
-set(LIBS ${ubox} ${ubus} ${blobmsg_json} ${ucode} ${uci} ${CARES_LIBRARY} ${CURL_LIBRARIES} resolv)
+set(LIBS ${ubox} ${ubus} ${blobmsg_json} ${ucode} ${CARES_LIBRARY} ${CURL_LIBRARIES} resolv)
 
 # C binding module sources
 set(BINDING_SOURCES
