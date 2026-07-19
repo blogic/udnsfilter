@@ -144,11 +144,16 @@ struct stats {
 	uint64_t upstream_errors;
 	uint64_t malformed_queries;
 	uint64_t refused_queries;
+	uint64_t rate_limited;
 };
 
-/* Security configuration, adjustable from ucode */
+/* Security configuration, adjustable from ucode; zero disables a limit */
 struct udns_security {
 	bool block_any;
+	unsigned int ratelimit;
+	unsigned int ratelimit_burst;
+	unsigned int ratelimit_global;
+	unsigned int ratelimit_global_burst;
 };
 extern struct udns_security udns_security;
 
@@ -224,6 +229,9 @@ int filter_add_rule(struct filter_ctx *ctx, const char *pattern);
 bool filter_match(struct filter_ctx *ctx, const char *domain,
                   struct filter_rule **matched);
 void filter_stats(struct filter_ctx *ctx, size_t *count);
+
+/* ratelimit.c - query rate limiting */
+bool ratelimit_allow(const struct sockaddr_storage *ss);
 
 /* util.c - Utilities */
 uint32_t hash_string(const char *str);

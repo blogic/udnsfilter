@@ -42,6 +42,7 @@ set(BINDING_SOURCES
 	src/filter.c
 	src/callback.c
 	src/util.c
+	src/ratelimit.c
 	src/privilege.c
 )
 

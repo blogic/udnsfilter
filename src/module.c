@@ -47,6 +47,10 @@ struct udns_ctx global_ctx = {
 
 struct udns_security udns_security = {
 	.block_any = true,
+	.ratelimit = 100,
+	.ratelimit_burst = 300,
+	.ratelimit_global = 1000,
+	.ratelimit_global_burst = 2000,
 };
 
 static char *doh_bootstrap;

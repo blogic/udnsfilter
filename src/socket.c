@@ -123,6 +123,11 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 		return;
 	}
 
+	if (!ratelimit_allow(&from)) {
+		global_ctx.stats.rate_limited++;
+		return;
+	}
+
 	switch (packet_precheck(buffer, len)) {
 	case QUERY_VERDICT_DROP:
 		global_ctx.stats.malformed_queries++;

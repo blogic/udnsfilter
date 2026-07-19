@@ -224,6 +224,12 @@ static bool conn_messages_process(struct tcp_conn *conn)
 
 		global_ctx.stats.total_queries++;
 
+		if (!ratelimit_allow(&conn->addr)) {
+			global_ctx.stats.rate_limited++;
+			conn_close(conn);
+			return false;
+		}
+
 		switch (packet_precheck(conn->buf + 2, msg_len)) {
 		case QUERY_VERDICT_DROP:
 			global_ctx.stats.malformed_queries++;
