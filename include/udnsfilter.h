@@ -146,11 +146,13 @@ struct stats {
 	uint64_t refused_queries;
 	uint64_t rate_limited;
 	uint64_t overload_dropped;
+	uint64_t rebind_blocked;
 };
 
 /* Security configuration, adjustable from ucode; zero disables a limit */
 struct udns_security {
 	bool block_any;
+	bool dns0x20;
 	unsigned int ratelimit;
 	unsigned int ratelimit_burst;
 	unsigned int ratelimit_global;

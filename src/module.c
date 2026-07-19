@@ -447,6 +447,16 @@ uc_udnsfilter_stats_get(uc_vm_t *vm, size_t nargs)
 	               ucv_uint64_new(global_ctx.stats.forwarded_queries));
 	ucv_object_add(stats, "upstream_errors",
 	               ucv_uint64_new(global_ctx.stats.upstream_errors));
+	ucv_object_add(stats, "malformed_queries",
+	               ucv_uint64_new(global_ctx.stats.malformed_queries));
+	ucv_object_add(stats, "refused_queries",
+	               ucv_uint64_new(global_ctx.stats.refused_queries));
+	ucv_object_add(stats, "rate_limited",
+	               ucv_uint64_new(global_ctx.stats.rate_limited));
+	ucv_object_add(stats, "overload_dropped",
+	               ucv_uint64_new(global_ctx.stats.overload_dropped));
+	ucv_object_add(stats, "rebind_blocked",
+	               ucv_uint64_new(global_ctx.stats.rebind_blocked));
 
 	return stats;
 }

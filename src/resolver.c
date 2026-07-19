@@ -260,13 +260,19 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 
 	memset(&opts, 0, sizeof(opts));
 	opts.flags = ARES_FLAG_NOCHECKRESP;
+	if (udns_security.dns0x20)
+		opts.flags |= ARES_FLAG_DNS0x20;
 	opts.timeout = 2000;
 	opts.tries = 2;
 	opts.sock_state_cb = sock_state_cb;
 	opts.sock_state_cb_data = ctx;
 	opts.qcache_max_ttl = cache_ttl;
+	/* Rotate the UDP source socket, and thus the source port, so a blind
+	 * off-path spoofer cannot pin one port for the channel's lifetime. */
+	opts.udp_max_queries = 128;
 	optmask = ARES_OPT_FLAGS | ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES |
-	          ARES_OPT_SOCK_STATE_CB | ARES_OPT_QUERY_CACHE;
+	          ARES_OPT_SOCK_STATE_CB | ARES_OPT_QUERY_CACHE |
+	          ARES_OPT_UDP_MAX_QUERIES;
 
 	if (rotation)
 		optmask |= ARES_OPT_ROTATE;
@@ -425,7 +431,7 @@ static void rebind_response_send(struct query_callback_data *data)
 
 	fprintf(stderr, "Blocked DNS rebinding attempt for domain %s\n",
 	        data->domain ? data->domain : "unknown");
-	global_ctx.stats.blocked_queries++;
+	global_ctx.stats.rebind_blocked++;
 
 	if (packet_parse(&query, data->query_data, data->query_len) < 0)
 		return;
