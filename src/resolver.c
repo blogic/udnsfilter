@@ -23,6 +23,8 @@ struct query_callback_data {
 	socklen_t client_addrlen;
 	uint16_t original_id;
 	char *domain;
+	uint8_t *query_data;
+	size_t query_len;
 };
 
 struct resolver_fd {
@@ -332,6 +334,31 @@ static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events)
 }
 
 /**
+ * rebind_response_send() - Answer a rebind-blocked query with NXDOMAIN
+ * @data: Query callback data holding the original client query
+ */
+static void rebind_response_send(struct query_callback_data *data)
+{
+	struct dns_packet query, response;
+
+	fprintf(stderr, "Blocked DNS rebinding attempt for domain %s\n",
+	        data->domain ? data->domain : "unknown");
+	global_ctx.stats.blocked_queries++;
+
+	if (packet_parse(&query, data->query_data, data->query_len) < 0)
+		return;
+
+	memset(&response, 0, sizeof(response));
+
+	if (packet_build_nxdomain(&response, &query) > 0)
+		udns_socket_send(data->sock, response.data, response.len,
+		                 (struct sockaddr *)&data->client_addr, data->client_addrlen);
+
+	free(query.data);
+	free(response.data);
+}
+
+/**
  * ares_dnsrec_callback() - Handle DNS response from upstream
  * @arg: Query callback data
  * @status: c-ares status code
@@ -339,7 +366,8 @@ static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events)
  * @dnsrec: Parsed DNS record
  *
  * Processes upstream DNS responses, applies DNS rebinding protection,
- * and forwards valid responses to clients.
+ * and forwards valid responses to clients. The client always receives
+ * an answer: SERVFAIL on upstream failure, NXDOMAIN on a rebind block.
  */
 static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeouts,
                                  const ares_dns_record_t *dnsrec)
@@ -348,34 +376,36 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 	uint8_t *response_buf = NULL;
 	size_t response_len = 0;
 
-	if (status == ARES_SUCCESS && dnsrec) {
-		/* Convert c-ares DNS record to wire format */
+	if (status == ARES_SUCCESS && dnsrec)
 		ares_dns_write(dnsrec, &response_buf, &response_len);
 
-		if (response_buf && response_len >= 2) {
-			/* DNS rebinding protection: block private IPs */
-			if (dns_response_contains_private_ip(response_buf, response_len)) {
-				fprintf(stderr, "Blocked DNS rebinding attempt for domain %s\n",
-				        data->domain ? data->domain : "unknown");
-				global_ctx.stats.blocked_queries++;
-			} else {
-				/* Restore original query ID */
-				uint16_t id_net = htons(data->original_id);
-				memcpy(response_buf, &id_net, 2);
+	if (!response_buf || response_len < 2) {
+		struct dns_packet response;
 
-				/* Send response to client */
-				udns_socket_send(data->sock, response_buf, response_len,
-				                (struct sockaddr *)&data->client_addr, data->client_addrlen);
-
-				global_ctx.stats.forwarded_queries++;
-			}
-		}
-
-		ares_free_string(response_buf);
-	} else {
 		global_ctx.stats.upstream_errors++;
+
+		if (packet_build_servfail(&response, data->original_id) == 0) {
+			udns_socket_send(data->sock, response.data, response.len,
+			                 (struct sockaddr *)&data->client_addr, data->client_addrlen);
+			free(response.data);
+		}
+	} else if (dns_response_contains_private_ip(response_buf, response_len)) {
+		rebind_response_send(data);
+	} else {
+		/* Restore original query ID */
+		uint16_t id_net = htons(data->original_id);
+		memcpy(response_buf, &id_net, 2);
+
+		udns_socket_send(data->sock, response_buf, response_len,
+		                (struct sockaddr *)&data->client_addr, data->client_addrlen);
+
+		global_ctx.stats.forwarded_queries++;
 	}
 
+	if (response_buf)
+		ares_free_string(response_buf);
+
+	free(data->query_data);
 	free(data->domain);
 	free(data);
 }
@@ -432,6 +462,18 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 		return -1;
 	}
 
+	/* Keep the original query so a rebind block can answer with NXDOMAIN */
+	data->query_data = malloc(query_len);
+	if (!data->query_data) {
+		ares_dns_record_destroy(dnsrec);
+		free(pkt.data);
+		free(data->domain);
+		free(data);
+		return -1;
+	}
+	memcpy(data->query_data, query_data, query_len);
+	data->query_len = query_len;
+
 	status = ares_send_dnsrec(ctx->channel, dnsrec, ares_dnsrec_callback, data, &qid);
 
 	ares_dns_record_destroy(dnsrec);
@@ -439,6 +481,7 @@ int resolver_forward_query(struct resolver_ctx *ctx, struct udns_socket *sock,
 
 	if (status != ARES_SUCCESS) {
 		udns_set_error("ares_send_dnsrec failed: %s", ares_strerror(status));
+		free(data->query_data);
 		free(data->domain);
 		free(data);
 		return -1;
