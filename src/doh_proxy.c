@@ -342,6 +342,9 @@ static int doh_forward_query(struct doh_proxy_ctx *ctx, const uint8_t *query_dat
 	curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
 	curl_easy_setopt(easy, CURLOPT_CAPATH, "/etc/ssl/certs");
 
+	if (ctx->resolve_list)
+		curl_easy_setopt(easy, CURLOPT_RESOLVE, ctx->resolve_list);
+
 	req->headers = curl_slist_append(NULL, "Content-Type: application/dns-message");
 	req->headers = curl_slist_append(req->headers, "Accept: application/dns-message");
 	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, req->headers);
@@ -376,18 +379,59 @@ static void udp_socket_cb(struct uloop_fd *ufd, unsigned int events)
 }
 
 /**
+ * resolve_list_build() - Build a CURLOPT_RESOLVE entry for the DoH host
+ * @doh_url: DoH endpoint URL
+ * @bootstrap: IP address to pin the URL host to
+ *
+ * Pins the DoH hostname to the given bootstrap address so curl never
+ * consults the system resolver, which may loop back into this filter
+ * or block the event loop.
+ *
+ * Return: slist with one host:port:address entry, or NULL on error
+ */
+static struct curl_slist *resolve_list_build(const char *doh_url, const char *bootstrap)
+{
+	struct curl_slist *list = NULL;
+	CURLU *url = curl_url();
+	char *host = NULL, *port = NULL;
+	char entry[512];
+	int ret;
+
+	if (!url)
+		return NULL;
+
+	if (curl_url_set(url, CURLUPART_URL, doh_url, 0) != CURLUE_OK ||
+	    curl_url_get(url, CURLUPART_HOST, &host, 0) != CURLUE_OK ||
+	    curl_url_get(url, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) != CURLUE_OK)
+		goto out;
+
+	ret = snprintf(entry, sizeof(entry), "%s:%s:%s", host, port, bootstrap);
+	if (ret > 0 && (size_t)ret < sizeof(entry))
+		list = curl_slist_append(NULL, entry);
+
+out:
+	curl_free(host);
+	curl_free(port);
+	curl_url_cleanup(url);
+
+	return list;
+}
+
+/**
  * doh_proxy_init() - Initialise DoH proxy
  * @ctx: Proxy context to initialise
  * @listen_addr: Local address to listen on
  * @port: Local port number
  * @doh_url: DoH endpoint URL
+ * @bootstrap: Optional IP address the URL hostname resolves to
  *
  * Creates UDP socket, initialises libcurl multi interface, and integrates
  * with uloop.
  *
  * Return: 0 on success, -1 on error
  */
-int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port, const char *doh_url)
+int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port,
+                   const char *doh_url, const char *bootstrap)
 {
 	int ret;
 	int opt = 1;
@@ -401,13 +445,19 @@ int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port,
 	if (!ctx->doh_url)
 		return -1;
 
+	if (bootstrap) {
+		ctx->resolve_list = resolve_list_build(doh_url, bootstrap);
+		if (!ctx->resolve_list) {
+			fprintf(stderr, "Invalid bootstrap setup for %s\n", doh_url);
+			goto err;
+		}
+	}
+
 	ctx->port = port;
 
 	ctx->listen_fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (ctx->listen_fd < 0) {
-		free(ctx->doh_url);
-		return -1;
-	}
+	if (ctx->listen_fd < 0)
+		goto err;
 
 	setsockopt(ctx->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -416,25 +466,16 @@ int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port,
 	ctx->bind_addr.sin_port = htons(port);
 
 	ret = inet_pton(AF_INET, listen_addr, &ctx->bind_addr.sin_addr);
-	if (ret <= 0) {
-		close(ctx->listen_fd);
-		free(ctx->doh_url);
-		return -1;
-	}
+	if (ret <= 0)
+		goto err_close;
 
 	ret = bind(ctx->listen_fd, (struct sockaddr *)&ctx->bind_addr, sizeof(ctx->bind_addr));
-	if (ret < 0) {
-		close(ctx->listen_fd);
-		free(ctx->doh_url);
-		return -1;
-	}
+	if (ret < 0)
+		goto err_close;
 
 	ctx->multi_handle = curl_multi_init();
-	if (!ctx->multi_handle) {
-		close(ctx->listen_fd);
-		free(ctx->doh_url);
-		return -1;
-	}
+	if (!ctx->multi_handle)
+		goto err_close;
 
 	curl_multi_setopt(ctx->multi_handle, CURLMOPT_SOCKETFUNCTION, curl_socket_function);
 	curl_multi_setopt(ctx->multi_handle, CURLMOPT_SOCKETDATA, ctx);
@@ -451,6 +492,13 @@ int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port,
 		fprintf(stderr, "Warning: Failed to drop privileges\n");
 
 	return 0;
+
+err_close:
+	close(ctx->listen_fd);
+err:
+	curl_slist_free_all(ctx->resolve_list);
+	free(ctx->doh_url);
+	return -1;
 }
 
 /**
@@ -481,6 +529,7 @@ void doh_proxy_cleanup(struct doh_proxy_ctx *ctx)
 		close(ctx->listen_fd);
 	}
 
+	curl_slist_free_all(ctx->resolve_list);
 	free(ctx->doh_url);
 	memset(ctx, 0, sizeof(*ctx));
 }
@@ -489,10 +538,11 @@ static struct doh_proxy_ctx proxy_ctx;
 
 static void print_usage(const char *prog)
 {
-	printf("Usage: %s <listen_addr> <port> <doh_url>\n", prog);
+	printf("Usage: %s <listen_addr> <port> <doh_url> [bootstrap_ip]\n", prog);
 	printf("\n");
 	printf("Example:\n");
 	printf("  %s 127.0.0.1 5301 https://1.1.1.1/dns-query\n", prog);
+	printf("  %s 127.0.0.1 5301 https://dns.google/dns-query 8.8.8.8\n", prog);
 }
 
 int main(int argc, char **argv)
@@ -500,14 +550,17 @@ int main(int argc, char **argv)
 	const char *listen_addr;
 	int port;
 	const char *doh_url;
+	const char *bootstrap = NULL;
 
-	if (argc != 4) {
+	if (argc < 4 || argc > 5) {
 		print_usage(argv[0]);
 		return 1;
 	}
 
 	listen_addr = argv[1];
 	doh_url = argv[3];
+	if (argc == 5)
+		bootstrap = argv[4];
 
 	char *endptr;
 	long port_long = strtol(argv[2], &endptr, 10);
@@ -525,8 +578,10 @@ int main(int argc, char **argv)
 	printf("Starting DNS-to-DoH proxy...\n");
 	printf("Listening on %s:%d\n", listen_addr, port);
 	printf("DoH endpoint: %s\n", doh_url);
+	if (bootstrap)
+		printf("Bootstrap: %s\n", bootstrap);
 
-	if (doh_proxy_init(&proxy_ctx, listen_addr, port, doh_url) < 0) {
+	if (doh_proxy_init(&proxy_ctx, listen_addr, port, doh_url, bootstrap) < 0) {
 		fprintf(stderr, "Failed to initialise proxy\n");
 		uloop_done();
 		curl_global_cleanup();

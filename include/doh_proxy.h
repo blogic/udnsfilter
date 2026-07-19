@@ -19,12 +19,14 @@ struct doh_proxy_ctx {
 	struct sockaddr_in bind_addr;
 	CURLM *multi_handle;
 	char *doh_url;
+	struct curl_slist *resolve_list;
 	int port;
 	struct pending_request *pending_requests;
 	int pending_request_count;
 };
 
-int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port, const char *doh_url);
+int doh_proxy_init(struct doh_proxy_ctx *ctx, const char *listen_addr, int port,
+                   const char *doh_url, const char *bootstrap);
 void doh_proxy_cleanup(struct doh_proxy_ctx *ctx);
 
 #endif /* __DOH_PROXY_H */

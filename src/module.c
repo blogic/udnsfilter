@@ -46,6 +46,8 @@ struct udns_ctx global_ctx = {
 	.next_proxy_port = DOH_PROXY_START_PORT
 };
 
+static char *doh_bootstrap;
+
 /**
  * proxy_exec() - Fork and exec a DoH proxy instance
  * @proxy: Proxy descriptor holding port and DoH URL
@@ -61,7 +63,8 @@ static pid_t proxy_exec(struct doh_proxy_process *proxy)
 
 	pid = fork();
 	if (pid == 0) {
-		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, proxy->doh_url, NULL);
+		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, proxy->doh_url,
+		       doh_bootstrap, NULL);
 		_exit(1);
 	}
 
@@ -535,12 +538,14 @@ uc_udnsfilter_stats_reset(uc_vm_t *vm, size_t nargs)
 /**
  * uc_udnsfilter_set_upstream() - Configure upstream DNS servers
  * @vm: ucode VM instance
- * @nargs: Number of arguments (1)
+ * @nargs: Number of arguments (2)
  *
- * Arguments: servers (array of strings)
+ * Arguments: servers (array of strings), bootstrap (optional string)
  *
  * Sets the upstream DNS servers. Supports standard DNS URIs (dns://host:port)
  * and DoH URIs (dns+https://host/path). DoH URIs spawn a local proxy process.
+ * The bootstrap IP pins DoH hostnames so their resolution cannot loop back
+ * into this filter.
  *
  * Return: true on success, NULL on failure
  */
@@ -548,6 +553,7 @@ static uc_value_t *
 uc_udnsfilter_set_upstream(uc_vm_t *vm, size_t nargs)
 {
 	uc_value_t *servers_val = uc_fn_arg(0);
+	uc_value_t *bootstrap_val = uc_fn_arg(1);
 	const char **servers;
 	size_t count, i, server_idx = 0;
 
@@ -559,6 +565,11 @@ uc_udnsfilter_set_upstream(uc_vm_t *vm, size_t nargs)
 		return NULL;
 
 	cleanup_proxies();
+
+	free(doh_bootstrap);
+	doh_bootstrap = NULL;
+	if (bootstrap_val && ucv_type(bootstrap_val) == UC_STRING)
+		doh_bootstrap = strdup(ucv_string_get(bootstrap_val));
 
 	servers = calloc(count, sizeof(char *));
 	if (!servers)
