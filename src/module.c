@@ -20,6 +20,9 @@
 #define DOH_PROXY_PATH "/src/projects/udnsfilter/doh_proxy"
 #endif
 #define DOH_PROXY_START_PORT 5301
+#define DOH_PROXY_RESTART_MIN_MS 1000
+#define DOH_PROXY_RESTART_MAX_MS 30000
+#define DOH_PROXY_STABLE_SECS 30
 
 /**
  * doh_proxy_path() - Get the path to the doh_proxy executable
@@ -44,32 +47,68 @@ struct udns_ctx global_ctx = {
 };
 
 /**
+ * proxy_exec() - Fork and exec a DoH proxy instance
+ * @proxy: Proxy descriptor holding port and DoH URL
+ *
+ * Return: Child pid on success, -1 on fork failure
+ */
+static pid_t proxy_exec(struct doh_proxy_process *proxy)
+{
+	char port_str[16];
+	pid_t pid;
+
+	snprintf(port_str, sizeof(port_str), "%d", proxy->port);
+
+	pid = fork();
+	if (pid == 0) {
+		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, proxy->doh_url, NULL);
+		_exit(1);
+	}
+
+	if (pid > 0)
+		proxy->started = time(NULL);
+
+	return pid;
+}
+
+static void proxy_restart_cb(struct uloop_timeout *timeout)
+{
+	struct doh_proxy_process *proxy = container_of(timeout, struct doh_proxy_process, restart_timer);
+	pid_t pid = proxy_exec(proxy);
+
+	if (pid < 0) {
+		uloop_timeout_set(&proxy->restart_timer, proxy->restart_delay);
+		return;
+	}
+
+	proxy->proc.pid = pid;
+	uloop_process_add(&proxy->proc);
+}
+
+/**
  * proxy_process_cb() - Handle DoH proxy process exit
  * @proc: uloop process structure
  * @exitcode: Exit code from the process
  *
- * Automatically restarts a DoH proxy process when it exits.
+ * Schedules a restart with an escalating delay so a missing or
+ * immediately crashing doh_proxy binary cannot drive a fork loop. The
+ * delay resets once an instance has run long enough to count as
+ * stable.
  */
 static void proxy_process_cb(struct uloop_process *proc, int exitcode)
 {
 	struct doh_proxy_process *proxy = container_of(proc, struct doh_proxy_process, proc);
 
-	fprintf(stderr, "DoH proxy on port %d exited with code %d, restarting...\n",
-	        proxy->port, exitcode);
+	if (time(NULL) - proxy->started > DOH_PROXY_STABLE_SECS)
+		proxy->restart_delay = DOH_PROXY_RESTART_MIN_MS;
+	else if (proxy->restart_delay < DOH_PROXY_RESTART_MAX_MS)
+		proxy->restart_delay *= 2;
 
-	/* Fork and restart the proxy process */
-	pid_t pid = fork();
-	if (pid == 0) {
-		/* Child: exec new proxy instance */
-		char port_str[16];
-		snprintf(port_str, sizeof(port_str), "%d", proxy->port);
-		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, proxy->doh_url, NULL);
-		_exit(1);
-	} else if (pid > 0) {
-		/* Parent: register new process with uloop */
-		proxy->proc.pid = pid;
-		uloop_process_add(&proxy->proc);
-	}
+	fprintf(stderr, "DoH proxy on port %d exited with code %d, restarting in %d ms\n",
+	        proxy->port, exitcode, proxy->restart_delay);
+
+	proxy->proc.pid = 0;
+	uloop_timeout_set(&proxy->restart_timer, proxy->restart_delay);
 }
 
 /**
@@ -86,76 +125,47 @@ static void proxy_process_cb(struct uloop_process *proc, int exitcode)
 static struct doh_proxy_process *spawn_doh_proxy(const char *original_uri, const char *doh_url)
 {
 	struct doh_proxy_process *proxy;
-	char port_str[16];
+	char rewritten[256];
 	pid_t pid;
 	int ret;
+
+	if (global_ctx.next_proxy_port > 65535)
+		return NULL;
 
 	proxy = calloc(1, sizeof(*proxy));
 	if (!proxy)
 		return NULL;
 
-	if (global_ctx.next_proxy_port > 65535) {
-		free(proxy);
-		return NULL;
-	}
-
 	proxy->port = global_ctx.next_proxy_port++;
+	proxy->restart_delay = DOH_PROXY_RESTART_MIN_MS;
+	proxy->restart_timer.cb = proxy_restart_cb;
+	proxy->proc.cb = proxy_process_cb;
 
 	proxy->original_uri = strdup(original_uri);
-	if (!proxy->original_uri) {
-		free(proxy);
-		return NULL;
-	}
-
 	proxy->doh_url = strdup(doh_url);
-	if (!proxy->doh_url) {
-		free(proxy->original_uri);
-		free(proxy);
-		return NULL;
-	}
 
-	ret = snprintf(port_str, sizeof(port_str), "%d", proxy->port);
-	if (ret < 0 || (size_t)ret >= sizeof(port_str)) {
-		free(proxy->doh_url);
-		free(proxy->original_uri);
-		free(proxy);
-		return NULL;
-	}
-
-	char rewritten[256];
 	ret = snprintf(rewritten, sizeof(rewritten), "dns://127.0.0.1:%d", proxy->port);
-	if (ret < 0 || (size_t)ret >= sizeof(rewritten)) {
-		free(proxy->doh_url);
-		free(proxy->original_uri);
-		free(proxy);
-		return NULL;
-	}
+	if (ret > 0 && (size_t)ret < sizeof(rewritten))
+		proxy->rewritten_uri = strdup(rewritten);
 
-	proxy->rewritten_uri = strdup(rewritten);
-	if (!proxy->rewritten_uri) {
-		free(proxy->doh_url);
-		free(proxy->original_uri);
-		free(proxy);
-		return NULL;
-	}
+	if (!proxy->original_uri || !proxy->doh_url || !proxy->rewritten_uri)
+		goto err;
 
-	pid = fork();
-	if (pid == 0) {
-		execlp(doh_proxy_path(), "doh_proxy", "127.0.0.1", port_str, doh_url, NULL);
-		_exit(1);
-	} else if (pid < 0) {
-		free(proxy->rewritten_uri);
-		free(proxy->doh_url);
-		free(proxy->original_uri);
-		free(proxy);
-		return NULL;
-	}
+	pid = proxy_exec(proxy);
+	if (pid < 0)
+		goto err;
 
 	proxy->proc.pid = pid;
-	proxy->proc.cb = proxy_process_cb;
 	uloop_process_add(&proxy->proc);
 
 	return proxy;
+
+err:
+	free(proxy->rewritten_uri);
+	free(proxy->doh_url);
+	free(proxy->original_uri);
+	free(proxy);
+	return NULL;
 }
 
 /**
@@ -169,8 +179,10 @@ static void cleanup_proxies(void)
 
 	for (proxy = global_ctx.proxies; proxy; proxy = tmp) {
 		tmp = proxy->next;
+		uloop_timeout_cancel(&proxy->restart_timer);
 		uloop_process_delete(&proxy->proc);
-		kill(proxy->proc.pid, SIGTERM);
+		if (proxy->proc.pid > 0)
+			kill(proxy->proc.pid, SIGTERM);
 		free(proxy->doh_url);
 		free(proxy->original_uri);
 		free(proxy->rewritten_uri);

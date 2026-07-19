@@ -5,12 +5,16 @@
 #ifndef __UDNSFILTER_INTERNAL_H
 #define __UDNSFILTER_INTERNAL_H
 
+#include <time.h>
 #include <ucode/types.h>
 #include <ucode/vm.h>
 #include "udnsfilter.h"
 
 struct doh_proxy_process {
 	struct uloop_process proc;
+	struct uloop_timeout restart_timer;
+	int restart_delay;
+	time_t started;
 	int port;
 	char *doh_url;
 	char *original_uri;
