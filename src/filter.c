@@ -63,10 +63,43 @@ static void hashtable_destroy(struct filter_hashtable *ht)
 	free(ht);
 }
 
+static void hashtable_grow(struct filter_hashtable *ht)
+{
+	struct filter_rule **buckets;
+	size_t new_size = ht->size * 2;
+	size_t i;
+
+	/* Growth failure is not fatal: chains lengthen but lookups stay correct */
+	buckets = calloc(new_size, sizeof(*buckets));
+	if (!buckets)
+		return;
+
+	for (i = 0; i < ht->size; i++) {
+		struct filter_rule *rule = ht->buckets[i];
+
+		while (rule) {
+			struct filter_rule *next = rule->next;
+			size_t bucket = rule->hash % new_size;
+
+			rule->next = buckets[bucket];
+			buckets[bucket] = rule;
+			rule = next;
+		}
+	}
+
+	free(ht->buckets);
+	ht->buckets = buckets;
+	ht->size = new_size;
+}
+
 static void hashtable_insert(struct filter_hashtable *ht, struct filter_rule *rule)
 {
-	size_t bucket = rule->hash % ht->size;
+	size_t bucket;
 
+	if (ht->count >= ht->size - ht->size / 4)
+		hashtable_grow(ht);
+
+	bucket = rule->hash % ht->size;
 	rule->next = ht->buckets[bucket];
 	ht->buckets[bucket] = rule;
 	ht->count++;
