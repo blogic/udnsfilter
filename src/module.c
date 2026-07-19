@@ -812,9 +812,12 @@ uc_udnsfilter_forward_query(uc_vm_t *vm, size_t nargs)
 
 	domain = ucv_string_get(name_val);
 
-	resolver_forward_query(&global_ctx.resolver, udns_socket_for_client(&client_addr),
-	                      query_data, query_len,
-	                      &client_addr, client_addrlen, domain);
+	if (resolver_forward_query(&global_ctx.resolver, udns_socket_for_client(&client_addr),
+	                           query_data, query_len,
+	                           &client_addr, client_addrlen, domain) < 0)
+		return NULL;
+
+	global_ctx.stats.allowed_queries++;
 
 	return ucv_boolean_new(true);
 }

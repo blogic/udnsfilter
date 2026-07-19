@@ -18,13 +18,6 @@ let config = {
 	cache_ttl: 3600,
 };
 
-let stats = {
-	queries: 0,
-	forwarded: 0,
-	blocked: 0,
-	errors: 0
-};
-
 let ubus_conn;
 let ubus_obj;
 
@@ -132,24 +125,18 @@ function ubus_cleanup() {
 }
 
 function handle_query(packet, client_addr) {
-	stats.queries++;
-
-	if (!packet.questions || length(packet.questions) == 0) {
-		stats.errors++;
+	if (!packet.questions || length(packet.questions) == 0)
 		return;
-	}
 
 	let domain = packet.questions[0].name;
 	let client_ip = client_addr.address;
 
-	printf("Query #%d from %s:%d: %s\n",
-	       stats.queries, client_ip, client_addr.port, domain);
+	printf("Query from %s:%d: %s\n", client_ip, client_addr.port, domain);
 
 	if (config.filter_enabled && domain) {
 		let result = udnsfilter.filter_match(domain);
 		if (result && result.blocked) {
 			printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
-			stats.blocked++;
 
 			if (!global_domains.blocked[domain])
 				global_domains.blocked[domain] = 0;
@@ -177,7 +164,6 @@ function handle_query(packet, client_addr) {
 	}
 
 	udnsfilter.forward_query(client_addr, packet);
-	stats.forwarded++;
 }
 
 function init() {
@@ -218,11 +204,14 @@ function init() {
 }
 
 function print_stats() {
+	let s = udnsfilter.stats_get();
+
 	printf("\n--- Statistics ---\n");
-	printf("Total queries: %d\n", stats.queries);
-	printf("Blocked: %d\n", stats.blocked);
-	printf("Forwarded: %d\n", stats.forwarded);
-	printf("Errors: %d\n", stats.errors);
+	printf("Total queries: %d\n", s.total_queries);
+	printf("Blocked: %d\n", s.blocked_queries);
+	printf("Allowed: %d\n", s.allowed_queries);
+	printf("Forwarded: %d\n", s.forwarded_queries);
+	printf("Upstream errors: %d\n", s.upstream_errors);
 	printf("------------------\n\n");
 }
 
