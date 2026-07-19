@@ -228,7 +228,8 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 			return false;
 
 		if (rtype == DNS_TYPE_A && rdlength == 4) {
-			uint32_t ip = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
+			uint32_t ip = ((uint32_t)ptr[0] << 24) | ((uint32_t)ptr[1] << 16) |
+			              ((uint32_t)ptr[2] << 8) | ptr[3];
 			if (is_private_ipv4(ip))
 				return true;
 		} else if (rtype == DNS_TYPE_AAAA && rdlength == 16) {
