@@ -1,10 +1,10 @@
 #!/usr/bin/ucode
 'use strict';
 
-import * as uci from 'uci';
 import * as log from 'log';
 import * as uloop from 'uloop';
 import * as fs from 'fs';
+import * as filter from 'udnsfilter.filter';
 
 log.ulog_open(log.ULOG_SYSLOG);
 
@@ -75,43 +75,32 @@ function spawn_download(url, dest_path, on_complete) {
 }
 
 function update_filters() {
-	const cursor = uci.cursor(ARGV[0]);
-	if (!cursor) {
-		log.ulog('LOG_ERR', 'Failed to create UCI cursor');
-		exit(2);
-	}
-
-	if (!cursor.load('dns')) {
+	const entries = filter.lists(ARGV[0]);
+	if (!entries) {
 		log.ulog('LOG_ERR', 'Failed to load DNS configuration');
 		exit(2);
 	}
 
 	const filters = [];
 
-	cursor.foreach('dns', 'filter', function(section) {
-		const name = section['.name'];
-		const enabled = section.enabled;
-		const url = section.url;
-		const path = section.path;
-		const display_name = section.name || name;
-
-		if (enabled != '1') {
-			log.ulog('LOG_INFO', `Skipping disabled filter: ${display_name}`);
-			return;
+	for (let entry in entries) {
+		if (!entry.enabled) {
+			log.ulog('LOG_INFO', `Skipping disabled filter: ${entry.name}`);
+			continue;
 		}
 
-		if (!url || !path) {
-			log.ulog('LOG_WARNING', `Filter ${display_name} missing url or path`);
-			return;
+		if (!entry.url || !entry.path) {
+			log.ulog('LOG_WARNING', `Filter ${entry.name} missing url or path`);
+			continue;
 		}
 
-		if (!dir_ensure(fs.dirname(path))) {
-			log.ulog('LOG_WARNING', `Cannot create directory for ${display_name}`);
-			return;
+		if (!dir_ensure(fs.dirname(entry.path))) {
+			log.ulog('LOG_WARNING', `Cannot create directory for ${entry.name}`);
+			continue;
 		}
 
-		push(filters, { name: display_name, url: url, path: path });
-	});
+		push(filters, entry);
+	}
 
 	if (length(filters) == 0) {
 		log.ulog('LOG_WARNING', 'No enabled filters found in configuration');
