@@ -6,31 +6,12 @@ import * as ubus from 'ubus';
 import * as udnsfilter from 'udnsfilter';
 import * as filter from 'udnsfilter.filter';
 import * as config_mod from 'udnsfilter.config';
+import * as tracking from 'udnsfilter.tracking';
 
 let config = config_mod.load(ARGV[0]);
 
-const DOMAIN_MAP_MAX = 4096;
-const TRACKED_IPS_MAX = 32;
-
 let ubus_conn;
 let ubus_obj;
-
-let tracked_ips = {};
-let global_domains = { replied: {}, blocked: {} };
-
-function domain_count(owner, key, domain) {
-	let map = owner[key];
-
-	/* Reset a full map instead of evicting: these are diagnostic
-	 * counters and a per-query scan under a random-subdomain flood
-	 * would cost more than the history is worth. */
-	if (map[domain] == null && length(map) >= DOMAIN_MAP_MAX)
-		map = owner[key] = {};
-
-	if (!map[domain])
-		map[domain] = 0;
-	map[domain]++;
-}
 
 function filters_load() {
 	if (!config.filter_enabled)
@@ -108,26 +89,17 @@ function ubus_init() {
 				let ip = req.args?.ip;
 				let enable = req.args?.enable;
 
-				if (!ip) {
-					let result = {};
-					for (let tracked_ip in tracked_ips) {
-						result[tracked_ip] = tracked_ips[tracked_ip];
-					}
-					return result;
-				}
+				if (!ip)
+					return tracking.tracked();
 
 				if (enable) {
-					if (!tracked_ips[ip]) {
-						if (length(tracked_ips) >= TRACKED_IPS_MAX)
-							return { success: false, error: "too many tracked addresses" };
-						tracked_ips[ip] = { replied: {}, blocked: {} };
-					}
+					if (!tracking.track(ip))
+						return { success: false, error: "too many tracked addresses" };
 					return { success: true, tracking: ip };
-				} else {
-					if (tracked_ips[ip])
-						delete tracked_ips[ip];
-					return { success: true, stopped: ip };
 				}
+
+				tracking.untrack(ip);
+				return { success: true, stopped: ip };
 			},
 			args: {
 				ip: "127.0.0.1",
@@ -136,7 +108,7 @@ function ubus_init() {
 		},
 		domains: {
 			call: function(req) {
-				return global_domains;
+				return tracking.domains();
 			},
 			args: {}
 		}
@@ -168,19 +140,13 @@ function handle_query(packet, client_addr) {
 			if (config.verbose)
 				printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
 
-			domain_count(global_domains, 'blocked', domain);
-			if (tracked_ips[client_ip])
-				domain_count(tracked_ips[client_ip], 'blocked', domain);
-
+			tracking.domain_hit('blocked', client_ip, domain);
 			udnsfilter.send_blocked_response(client_addr, packet);
 			return;
 		}
 	}
 
-	domain_count(global_domains, 'replied', domain);
-	if (tracked_ips[client_ip])
-		domain_count(tracked_ips[client_ip], 'replied', domain);
-
+	tracking.domain_hit('replied', client_ip, domain);
 	udnsfilter.forward_query(client_addr, packet);
 }
 
