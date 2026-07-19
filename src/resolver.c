@@ -25,6 +25,11 @@ struct query_callback_data {
 	char *domain;
 };
 
+struct resolver_fd {
+	struct uloop_fd ufd;
+	struct resolver_fd *next;
+};
+
 static struct server_state *server_states = NULL;
 
 /**
@@ -99,31 +104,30 @@ static void ares_fd_cb(struct uloop_fd *ufd, unsigned int events);
 static void sock_state_cb(void *data, ares_socket_t socket_fd, int readable, int writable)
 {
 	struct resolver_ctx *ctx = data;
-	struct uloop_fd *ufd = NULL;
-	int i;
+	struct resolver_fd *rfd, **prev;
 
-	for (i = 0; i < ctx->nfds; i++) {
-		if (ctx->fds[i].fd == socket_fd) {
-			ufd = &ctx->fds[i];
+	for (prev = &ctx->fds; (rfd = *prev) != NULL; prev = &rfd->next) {
+		if (rfd->ufd.fd == socket_fd)
 			break;
-		}
 	}
 
 	if (!readable && !writable) {
-		if (ufd) {
-			uloop_fd_delete(ufd);
-			ufd->fd = -1;
-		}
+		if (!rfd)
+			return;
+		uloop_fd_delete(&rfd->ufd);
+		*prev = rfd->next;
+		free(rfd);
 		return;
 	}
 
-	if (!ufd) {
-		if (ctx->nfds + 1 > ctx->max_fds)
+	if (!rfd) {
+		rfd = calloc(1, sizeof(*rfd));
+		if (!rfd)
 			return;
-		ufd = &ctx->fds[ctx->nfds];
-		ctx->nfds++;
-		ufd->fd = socket_fd;
-		ufd->cb = ares_fd_cb;
+		rfd->ufd.fd = socket_fd;
+		rfd->ufd.cb = ares_fd_cb;
+		rfd->next = ctx->fds;
+		ctx->fds = rfd;
 	}
 
 	unsigned int events = 0;
@@ -132,9 +136,9 @@ static void sock_state_cb(void *data, ares_socket_t socket_fd, int readable, int
 	if (writable)
 		events |= ULOOP_WRITE;
 
-	if (ufd->registered)
-		uloop_fd_delete(ufd);
-	uloop_fd_add(ufd, events);
+	if (rfd->ufd.registered)
+		uloop_fd_delete(&rfd->ufd);
+	uloop_fd_add(&rfd->ufd, events);
 }
 
 /**
@@ -181,16 +185,6 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 
 	ctx->rotation_enabled = rotation;
 	ctx->cache_ttl = cache_ttl;
-	ctx->max_fds = 10;
-	ctx->fds = calloc(ctx->max_fds, sizeof(struct uloop_fd));
-	if (!ctx->fds) {
-		ares_destroy(ctx->channel);
-		udns_set_error("Out of memory");
-		return -1;
-	}
-
-	for (int i = 0; i < ctx->max_fds; i++)
-		ctx->fds[i].fd = -1;
 
 	return 0;
 }
@@ -202,19 +196,21 @@ int resolver_init(struct resolver_ctx *ctx, bool rotation, unsigned int cache_tt
 void resolver_cleanup(struct resolver_ctx *ctx)
 {
 	struct server_state *state, *state_tmp;
+	struct resolver_fd *rfd, *rfd_tmp;
 
 	if (!ctx)
 		return;
 
-	for (int i = 0; i < ctx->nfds; i++) {
-		if (ctx->fds[i].fd >= 0)
-			uloop_fd_delete(&ctx->fds[i]);
-	}
-
+	/* ares_destroy() closes sockets, which unregisters and frees their
+	 * resolver_fd entries through sock_state_cb; only leftovers remain. */
 	if (ctx->channel)
 		ares_destroy(ctx->channel);
 
-	free(ctx->fds);
+	for (rfd = ctx->fds; rfd; rfd = rfd_tmp) {
+		rfd_tmp = rfd->next;
+		uloop_fd_delete(&rfd->ufd);
+		free(rfd);
+	}
 
 	for (state = server_states; state; state = state_tmp) {
 		state_tmp = state->next;

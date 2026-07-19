@@ -104,9 +104,7 @@ struct server_state {
 /* Resolver Context (c-ares wrapper) */
 struct resolver_ctx {
 	ares_channel channel;
-	struct uloop_fd *fds;
-	int nfds;
-	int max_fds;
+	struct resolver_fd *fds;
 	struct uloop_timeout timeout;
 	bool rotation_enabled;
 	unsigned int cache_ttl;
