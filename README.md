@@ -22,7 +22,8 @@ uDNS Filter provides DNS-based content filtering and query forwarding for OpenWr
 
 ### Components
 
-- **udnsfilter.so**: Ucode module providing the core DNS engine (sockets, TCP transport, resolver, filter)
+- **udnsfilter.so**: Ucode module providing the core DNS engine (sockets, TCP transport, resolver, filter matching)
+- **udnsfilter.filter** (`lib/udnsfilter/filter.uc`): Ucode module owning filter list configuration and state; parses the UCI filter sections and drives the C engine through its path-based API
 - **udnsfilter**: Ucode launcher script reading UCI configuration and publishing the ubus interface
 - **doh_proxy**: Standalone binary that converts standard DNS queries to DoH requests
 - **c-ares**: Embedded DNS resolver library for upstream query forwarding
@@ -103,19 +104,28 @@ The launcher publishes the `udnsfilter` object:
 - `reset_stats`: reset the counters
 - `servers`: upstream server health states, rotation flag, and cache TTL
 - `reload_filter`: clear and reload all enabled filter lists from UCI
+- `filters`: last filter load result (per-list rule counts, totals, timestamp)
 - `reinit`: reinitialise the resolver after network changes
 - `tracking`: enable, disable, or dump per-client domain counters (bounded, at most 32 addresses)
 - `domains`: global replied and blocked domain counters (bounded)
 
 ## Module API
 
-The `udnsfilter` ucode module exports:
+The `udnsfilter` ucode module (C engine) exports:
 
 - `socket_create(addr, port, [rotation], [cache_ttl], [addr6])`
 - `set_callback('query', fn)`: fn receives (packet, client); client carries `transport` and, for TCP, a connection id
 - `set_upstream(servers, [bootstrap])`
-- `filter_load(path)`, `filter_load_uci([confdir])`, `filter_clear()`, `filter_match(domain)`
+- `filter_load(path)`, `filter_clear()`, `filter_match(domain)`
 - `rebind_protection(enable, [domains])`
 - `send_blocked_response(client, packet)`, `forward_query(client, packet)`
 - `stats_get()`, `stats_reset()`, `get_server_states()`, `reinit()`
 - `drop_privileges([user], [group])`, `shutdown()`
+
+The `udnsfilter.filter` ucode module (configuration and state) exports:
+
+- `lists([confdir])`: parsed UCI filter sections as `{section, name, url, path, enabled}` entries
+- `load([confdir])`: clear the engine and load all enabled lists; returns `{total_rules, loaded_filters, filters[], loaded_at}` or null if the configuration is unreadable (active rules stay untouched)
+- `status()`: result of the last `load()`
+
+The engine knows nothing about UCI; all configuration parsing happens in ucode.
