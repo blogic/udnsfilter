@@ -3,19 +3,23 @@
 
 import * as uloop from 'uloop';
 import * as ubus from 'ubus';
+import * as uci from 'uci';
 import * as udnsfilter from 'udnsfilter';
 
-const LISTEN_PORT = 54;
+const uci_dir = ARGV[0];
 
 let config = {
 	listen_addr: '0.0.0.0',
-	listen_port: LISTEN_PORT,
-	//upstream_servers: ['dns+https://1.1.1.1/dns-query'],
-	upstream_servers: ['dns://8.8.8.8'],
+	listen_addr6: '::',
+	listen_port: 53,
+	upstream_servers: [ 'dns://8.8.8.8' ],
+	bootstrap: null,
 	filter_enabled: true,
-	blocklist_file: '/src/projects/dns/udnsfilter/test-blocklist.txt',
 	rotation: true,
 	cache_ttl: 3600,
+	verbose: false,
+	rebind_protection: true,
+	rebind_domains: [],
 };
 
 let ubus_conn;
@@ -23,6 +27,52 @@ let ubus_obj;
 
 let tracked_ips = {};
 let global_domains = { replied: {}, blocked: {} };
+
+function config_bool(value, fallback) {
+	if (value == null)
+		return fallback;
+
+	return value == '1' || value == 'true' || value == 'on' || value == 'yes';
+}
+
+function config_list(value, fallback) {
+	if (type(value) == 'array')
+		return value;
+	if (type(value) == 'string')
+		return [ value ];
+
+	return fallback;
+}
+
+function config_load() {
+	let cursor = uci.cursor(uci_dir);
+
+	if (!cursor || !cursor.load('dns'))
+		return;
+
+	let main = cursor.get_all('dns', 'main');
+	if (!main)
+		return;
+
+	config.listen_addr = main.listen_addr ?? config.listen_addr;
+	config.listen_addr6 = main.listen_addr6 ?? config.listen_addr6;
+	config.listen_port = int(main.listen_port ?? config.listen_port);
+	config.bootstrap = main.bootstrap;
+	config.cache_ttl = int(main.cache_ttl ?? config.cache_ttl);
+	config.rotation = config_bool(main.rotation, config.rotation);
+	config.filter_enabled = config_bool(main.filter, config.filter_enabled);
+	config.verbose = config_bool(main.verbose, config.verbose);
+	config.rebind_protection = config_bool(main.rebind_protection, config.rebind_protection);
+	config.upstream_servers = config_list(main.upstream, config.upstream_servers);
+	config.rebind_domains = config_list(main.rebind_domain, config.rebind_domains);
+}
+
+function filters_load() {
+	if (!config.filter_enabled)
+		return null;
+
+	return udnsfilter.filter_load_uci(uci_dir);
+}
 
 function ubus_init() {
 	ubus_conn = ubus.connect();
@@ -60,14 +110,18 @@ function ubus_init() {
 		},
 		reload_filter: {
 			call: function(req) {
-				if (!config.filter_enabled || !config.blocklist_file)
+				if (!config.filter_enabled)
 					return { success: false, error: "filtering not enabled" };
 
-				let count = udnsfilter.filter_load(config.blocklist_file);
-				if (count < 0)
-					return { success: false, error: "failed to load filter list" };
+				let result = filters_load();
+				if (!result)
+					return { success: false, error: "failed to load filter lists" };
 
-				return { success: true, rules_loaded: count };
+				return {
+					success: true,
+					rules_loaded: result.total_rules,
+					filters: result.loaded_filters
+				};
 			},
 			args: {}
 		},
@@ -131,12 +185,14 @@ function handle_query(packet, client_addr) {
 	let domain = packet.questions[0].name;
 	let client_ip = client_addr.address;
 
-	printf("Query from %s:%d: %s\n", client_ip, client_addr.port, domain);
+	if (config.verbose)
+		printf("Query from %s:%d: %s\n", client_ip, client_addr.port, domain);
 
 	if (config.filter_enabled && domain) {
 		let result = udnsfilter.filter_match(domain);
 		if (result && result.blocked) {
-			printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
+			if (config.verbose)
+				printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
 
 			if (!global_domains.blocked[domain])
 				global_domains.blocked[domain] = 0;
@@ -170,19 +226,26 @@ function init() {
 	printf("Initialising udnsfilter...\n");
 
 	if (!udnsfilter.socket_create(config.listen_addr, config.listen_port,
-	                               config.rotation, config.cache_ttl)) {
+	                               config.rotation, config.cache_ttl,
+	                               config.listen_addr6)) {
 		printf("Failed to create socket\n");
 		return false;
 	}
 
-	printf("Listening on %s:%d\n", config.listen_addr, config.listen_port);
+	printf("Listening on %s:%d and [%s]:%d\n",
+	       config.listen_addr, config.listen_port,
+	       config.listen_addr6, config.listen_port);
 	printf("Server rotation: %J\n", config.rotation);
 	printf("Cache TTL: %d seconds\n", config.cache_ttl);
 
 	udnsfilter.set_callback('query', handle_query);
 
-	udnsfilter.set_upstream(config.upstream_servers);
+	udnsfilter.set_upstream(config.upstream_servers, config.bootstrap);
 	printf("Upstream servers: %s\n", join(', ', config.upstream_servers));
+	if (config.bootstrap)
+		printf("DoH bootstrap: %s\n", config.bootstrap);
+
+	udnsfilter.rebind_protection(config.rebind_protection, config.rebind_domains);
 
 	if (!ubus_init()) {
 		printf("Warning: Failed to initialise ubus\n");
@@ -190,14 +253,13 @@ function init() {
 		printf("ubus interface registered\n");
 	}
 
-	if (config.filter_enabled && config.blocklist_file) {
-		printf("Loading blocklist from %s...\n", config.blocklist_file);
-		let count = udnsfilter.filter_load(config.blocklist_file);
-		if (count > 0) {
-			printf("Loaded %d filter rules\n", count);
-		} else {
-			printf("Warning: Failed to load filter list\n");
-		}
+	if (config.filter_enabled) {
+		let result = filters_load();
+		if (result)
+			printf("Loaded %d filter rules from %d lists\n",
+			       result.total_rules, result.loaded_filters);
+		else
+			printf("Warning: Failed to load filter lists\n");
 	}
 
 	return true;
@@ -228,6 +290,8 @@ function shutdown() {
 
 uloop.init();
 
+config_load();
+
 if (!init()) {
 	printf("Initialisation failed\n");
 	exit(1);
@@ -238,7 +302,7 @@ uloop.signal("SIGTERM", shutdown);
 
 uloop.interval(30000, print_stats);
 
-printf("uDNS Filter started. Press Ctrl+C to stop.\n\n");
+printf("uDNS Filter started.\n");
 
 if (!udnsfilter.drop_privileges()) {
 	printf("Warning: Failed to drop privileges\n");

@@ -1,4 +1,16 @@
 
+config main 'main'
+	option listen_addr '0.0.0.0'
+	option listen_addr6 '::'
+	option listen_port '53'
+	list upstream 'dns://1.1.1.1'
+	list upstream 'dns://8.8.8.8'
+	option rotation '1'
+	option cache_ttl '3600'
+	option filter '1'
+	option verbose '0'
+	option rebind_protection '1'
+
 config filter 'adguard_dns'
 	option enabled '0'
 	option name 'AdGuard DNS Filter'

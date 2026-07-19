@@ -366,17 +366,20 @@ uc_udnsfilter_filter_load(uc_vm_t *vm, size_t nargs)
 /**
  * uc_udnsfilter_filter_load_uci() - Load filter lists from UCI configuration
  * @vm: ucode VM instance
- * @nargs: Number of arguments (0)
+ * @nargs: Number of arguments (1)
  *
- * Loads domain filter rules from all enabled filters defined in
- * /etc/config/dns UCI configuration file. Existing rules are cleared
- * first, making the call idempotent for reloads.
+ * Arguments: confdir (optional string, defaults to /etc/config)
+ *
+ * Loads domain filter rules from all enabled filters defined in the
+ * dns UCI configuration file. Existing rules are cleared first, making
+ * the call idempotent for reloads.
  *
  * Return: Object with total_rules, loaded_filters, and filter details array
  */
 static uc_value_t *
 uc_udnsfilter_filter_load_uci(uc_vm_t *vm, size_t nargs)
 {
+	uc_value_t *confdir_val = uc_fn_arg(0);
 	struct uci_context *uci_ctx;
 	struct uci_package *pkg;
 	struct uci_element *e;
@@ -387,6 +390,12 @@ uc_udnsfilter_filter_load_uci(uc_vm_t *vm, size_t nargs)
 	uci_ctx = uci_alloc_context();
 	if (!uci_ctx)
 		return NULL;
+
+	if (confdir_val && ucv_type(confdir_val) == UC_STRING &&
+	    uci_set_confdir(uci_ctx, ucv_string_get(confdir_val)) != UCI_OK) {
+		uci_free_context(uci_ctx);
+		return NULL;
+	}
 
 	if (uci_load(uci_ctx, "dns", &pkg) != UCI_OK) {
 		uci_free_context(uci_ctx);
