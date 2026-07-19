@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <arpa/nameser.h>
 #include <arpa/inet.h>
 #include <resolv.h>
@@ -253,7 +254,7 @@ int packet_parse(struct dns_packet *pkt, const uint8_t *data, size_t len)
  *
  * Constructs a DNS NXDOMAIN (domain not found) response using c-ares APIs.
  *
- * Return: Response length on success, -1 on error
+ * Return: 0 on success, negative errno on error
  */
 int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *query)
 {
@@ -264,11 +265,11 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 	size_t response_len = 0;
 
 	if (!response || !query || !query->data || query->len < sizeof(struct dns_header))
-		return -1;
+		return -EINVAL;
 
 	if (packet_parse_question((struct dns_packet *)query, &question) < 0) {
 		udns_set_error("Failed to parse question");
-		return -1;
+		return -EINVAL;
 	}
 
 	status = ares_dns_record_create(&dnsrec, query->id,
@@ -276,7 +277,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 	                                 ARES_OPCODE_QUERY, ARES_RCODE_NXDOMAIN);
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to create DNS record: %s", ares_strerror(status));
-		return -1;
+		return -EINVAL;
 	}
 
 	status = ares_dns_record_query_add(dnsrec, question.name,
@@ -285,7 +286,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to add query: %s", ares_strerror(status));
 		ares_dns_record_destroy(dnsrec);
-		return -1;
+		return -EINVAL;
 	}
 
 	status = ares_dns_write(dnsrec, &response_buf, &response_len);
@@ -293,7 +294,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to write DNS record: %s", ares_strerror(status));
-		return -1;
+		return -EINVAL;
 	}
 
 	if (response->capacity < response_len) {
@@ -301,7 +302,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 		if (!response->data) {
 			ares_free_string(response_buf);
 			udns_set_error("Out of memory");
-			return -1;
+			return -ENOMEM;
 		}
 		response->capacity = response_len;
 	}
@@ -310,7 +311,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 	response->len = response_len;
 	ares_free_string(response_buf);
 
-	return response->len;
+	return 0;
 }
 
 /**
@@ -319,7 +320,7 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
  * @query_id: Query ID to use in response
  * @rcode: DNS response code (SERVFAIL, FORMERR, NOTIMP, ...)
  *
- * Return: 0 on success, -1 on error
+ * Return: 0 on success, negative errno on error
  */
 int packet_build_rcode(struct dns_packet *response, uint16_t query_id, int rcode)
 {
@@ -327,12 +328,12 @@ int packet_build_rcode(struct dns_packet *response, uint16_t query_id, int rcode
 	struct dns_header *hdr;
 
 	if (!response)
-		return -1;
+		return -EINVAL;
 
 	buf = malloc(sizeof(struct dns_header));
 	if (!buf) {
 		udns_set_error("Out of memory");
-		return -1;
+		return -ENOMEM;
 	}
 
 	memset(response, 0, sizeof(*response));
@@ -409,7 +410,7 @@ enum query_verdict packet_precheck(const uint8_t *data, size_t len)
  * Constructs a DNS response with a null IP address (0.0.0.0) for A queries.
  * Used to block domains whilst providing a response.
  *
- * Return: Response length on success, -1 on error
+ * Return: 0 on success, negative errno on error
  */
 int packet_build_null_response(struct dns_packet *response, const struct dns_packet *query)
 {
@@ -422,11 +423,11 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 	struct in_addr null_addr;
 
 	if (!response || !query || !query->data || query->len < sizeof(struct dns_header))
-		return -1;
+		return -EINVAL;
 
 	if (packet_parse_question((struct dns_packet *)query, &question) < 0) {
 		udns_set_error("Failed to parse question");
-		return -1;
+		return -EINVAL;
 	}
 
 	status = ares_dns_record_create(&dnsrec, query->id,
@@ -434,7 +435,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 	                                 ARES_OPCODE_QUERY, ARES_RCODE_NOERROR);
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to create DNS record: %s", ares_strerror(status));
-		return -1;
+		return -EINVAL;
 	}
 
 	status = ares_dns_record_query_add(dnsrec, question.name,
@@ -443,7 +444,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to add query: %s", ares_strerror(status));
 		ares_dns_record_destroy(dnsrec);
-		return -1;
+		return -EINVAL;
 	}
 
 	if (question.qtype == DNS_TYPE_A) {
@@ -455,14 +456,14 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 		if (status != ARES_SUCCESS) {
 			udns_set_error("Failed to add RR: %s", ares_strerror(status));
 			ares_dns_record_destroy(dnsrec);
-			return -1;
+			return -EINVAL;
 		}
 
 		status = ares_dns_rr_set_addr(rr, ARES_RR_A_ADDR, &null_addr);
 		if (status != ARES_SUCCESS) {
 			udns_set_error("Failed to set address: %s", ares_strerror(status));
 			ares_dns_record_destroy(dnsrec);
-			return -1;
+			return -EINVAL;
 		}
 	}
 
@@ -471,7 +472,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 
 	if (status != ARES_SUCCESS) {
 		udns_set_error("Failed to write DNS record: %s", ares_strerror(status));
-		return -1;
+		return -EINVAL;
 	}
 
 	if (response->capacity < response_len) {
@@ -479,7 +480,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 		if (!response->data) {
 			ares_free_string(response_buf);
 			udns_set_error("Out of memory");
-			return -1;
+			return -ENOMEM;
 		}
 		response->capacity = response_len;
 	}
@@ -488,7 +489,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
 	response->len = response_len;
 	ares_free_string(response_buf);
 
-	return response->len;
+	return 0;
 }
 
 /**
@@ -501,7 +502,7 @@ int packet_build_null_response(struct dns_packet *response, const struct dns_pac
  * the client to retry over TCP because the full answer exceeds its
  * advertised UDP payload size.
  *
- * Return: 0 on success, -1 on error
+ * Return: 0 on success, negative errno on error
  */
 int packet_build_truncated(struct dns_packet *response, const uint8_t *query, size_t query_len)
 {
@@ -510,7 +511,7 @@ int packet_build_truncated(struct dns_packet *response, const uint8_t *query, si
 	size_t len;
 
 	if (!response || !query || query_len < sizeof(struct dns_header))
-		return -1;
+		return -EINVAL;
 
 	qdcount = ntohs(((const struct dns_header *)query)->questions);
 	len = sizeof(struct dns_header);
@@ -519,7 +520,7 @@ int packet_build_truncated(struct dns_packet *response, const uint8_t *query, si
 		int qname_len = scan_name_length(query, query_len, len);
 
 		if (qname_len < 0 || len + qname_len + 4 > query_len)
-			return -1;
+			return -EINVAL;
 		len += qname_len + 4;
 	}
 
@@ -528,7 +529,7 @@ int packet_build_truncated(struct dns_packet *response, const uint8_t *query, si
 	response->data = malloc(len);
 	if (!response->data) {
 		udns_set_error("Out of memory");
-		return -1;
+		return -ENOMEM;
 	}
 
 	memcpy(response->data, query, len);

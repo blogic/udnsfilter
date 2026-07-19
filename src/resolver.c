@@ -438,7 +438,7 @@ static void rebind_response_send(struct query_callback_data *data)
 
 	memset(&response, 0, sizeof(response));
 
-	if (packet_build_nxdomain(&response, &query) > 0)
+	if (packet_build_nxdomain(&response, &query) == 0)
 		client_response_send(data, response.data, response.len);
 
 	free(query.data);
