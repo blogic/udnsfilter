@@ -176,6 +176,33 @@ int udns_tcp_send(uint32_t conn_id, const uint8_t *data, size_t len)
 	return 0;
 }
 
+static void conn_rcode_send(struct tcp_conn *conn, const uint8_t *msg, int rcode)
+{
+	uint16_t query_id = (msg[0] << 8) | msg[1];
+	struct dns_packet response;
+
+	if (packet_build_rcode(&response, query_id, rcode) < 0)
+		return;
+
+	udns_tcp_send(conn->id, response.data, response.len);
+	free(response.data);
+}
+
+static void conn_query_dispatch(struct tcp_conn *conn, size_t msg_len)
+{
+	struct dns_packet pkt;
+
+	if (packet_parse(&pkt, conn->buf + 2, msg_len) < 0) {
+		global_ctx.stats.malformed_queries++;
+		conn_rcode_send(conn, conn->buf + 2, DNS_RCODE_FORMERR);
+		return;
+	}
+
+	udns_callback_query(&pkt, &conn->addr, conn->addrlen,
+	                    conn->buf + 2, msg_len, conn->id);
+	free(pkt.data);
+}
+
 /**
  * conn_messages_process() - Parse and dispatch buffered messages
  * @conn: Connection
@@ -195,14 +222,24 @@ static bool conn_messages_process(struct tcp_conn *conn)
 		if (conn->have < msg_len + 2)
 			return true;
 
-		struct dns_packet pkt;
-
 		global_ctx.stats.total_queries++;
 
-		if (packet_parse(&pkt, conn->buf + 2, msg_len) == 0) {
-			udns_callback_query(&pkt, &conn->addr, conn->addrlen,
-			                    conn->buf + 2, msg_len, conn->id);
-			free(pkt.data);
+		switch (packet_precheck(conn->buf + 2, msg_len)) {
+		case QUERY_VERDICT_DROP:
+			global_ctx.stats.malformed_queries++;
+			conn_close(conn);
+			return false;
+		case QUERY_VERDICT_FORMERR:
+			global_ctx.stats.malformed_queries++;
+			conn_rcode_send(conn, conn->buf + 2, DNS_RCODE_FORMERR);
+			break;
+		case QUERY_VERDICT_NOTIMP:
+			global_ctx.stats.refused_queries++;
+			conn_rcode_send(conn, conn->buf + 2, DNS_RCODE_NOTIMP);
+			break;
+		case QUERY_VERDICT_OK:
+			conn_query_dispatch(conn, msg_len);
+			break;
 		}
 
 		memmove(conn->buf, conn->buf + 2 + msg_len, conn->have - 2 - msg_len);

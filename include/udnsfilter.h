@@ -16,6 +16,7 @@
 #define DNS_MAX_PACKET_SIZE 512   /* Classic UDP payload limit (RFC 1035) */
 #define DNS_MAX_QUERY_SIZE 4096   /* Receive limit; EDNS0 queries exceed 512 */
 #define DNS_MAX_NAME_LENGTH 253
+#define DNS_MAX_NAME_WIRE_LENGTH 255
 #define DNS_MAX_LABEL_LENGTH 63
 
 /* DNS Header Structure */
@@ -38,6 +39,7 @@ struct dns_header {
 #define DNS_TYPE_TXT    16
 #define DNS_TYPE_AAAA   28
 #define DNS_TYPE_SRV    33
+#define DNS_TYPE_ANY    255
 
 /* DNS Classes */
 #define DNS_CLASS_IN    1
@@ -57,10 +59,8 @@ struct dns_header {
 #define DNS_FLAG_RD      (1 << 8)   /* Recursion Desired */
 #define DNS_FLAG_RA      (1 << 7)   /* Recursion Available */
 
-/* Common flag combinations */
-#define DNS_FLAGS_RESPONSE (DNS_FLAG_QR)
-#define DNS_FLAGS_RESPONSE_NXDOMAIN (DNS_FLAG_QR | DNS_RCODE_NXDOMAIN)
-#define DNS_FLAGS_RESPONSE_SERVFAIL (DNS_FLAG_QR | DNS_RCODE_SERVFAIL)
+#define DNS_OPCODE_QUERY 0
+#define DNS_OPCODE(flags) (((flags) >> 11) & 0xf)
 
 /* Filter Rule Types */
 enum filter_rule_type {
@@ -142,6 +142,22 @@ struct stats {
 	uint64_t allowed_queries;
 	uint64_t forwarded_queries;
 	uint64_t upstream_errors;
+	uint64_t malformed_queries;
+	uint64_t refused_queries;
+};
+
+/* Security configuration, adjustable from ucode */
+struct udns_security {
+	bool block_any;
+};
+extern struct udns_security udns_security;
+
+/* Verdict for a query before parsing and callback dispatch */
+enum query_verdict {
+	QUERY_VERDICT_OK,
+	QUERY_VERDICT_DROP,
+	QUERY_VERDICT_FORMERR,
+	QUERY_VERDICT_NOTIMP,
 };
 
 /* UDP socket context */
@@ -164,8 +180,9 @@ extern struct udns_ctx global_ctx;
 int packet_parse(struct dns_packet *pkt, const uint8_t *data, size_t len);
 int packet_build(struct dns_packet *pkt, uint8_t *buf, size_t buflen);
 int packet_parse_question(struct dns_packet *pkt, struct dns_question *q);
+enum query_verdict packet_precheck(const uint8_t *data, size_t len);
 int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *query);
-int packet_build_servfail(struct dns_packet *response, uint16_t query_id);
+int packet_build_rcode(struct dns_packet *response, uint16_t query_id, int rcode);
 int packet_build_null_response(struct dns_packet *response, const struct dns_packet *query);
 int packet_build_truncated(struct dns_packet *response, const uint8_t *query, size_t query_len);
 

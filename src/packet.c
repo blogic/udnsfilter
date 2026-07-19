@@ -314,15 +314,14 @@ int packet_build_nxdomain(struct dns_packet *response, const struct dns_packet *
 }
 
 /**
- * packet_build_servfail() - Build SERVFAIL response
+ * packet_build_rcode() - Build a header-only response with the given rcode
  * @response: Response packet structure to fill
  * @query_id: Query ID to use in response
- *
- * Constructs a DNS SERVFAIL (server failure) response with minimal header.
+ * @rcode: DNS response code (SERVFAIL, FORMERR, NOTIMP, ...)
  *
  * Return: 0 on success, -1 on error
  */
-int packet_build_servfail(struct dns_packet *response, uint16_t query_id)
+int packet_build_rcode(struct dns_packet *response, uint16_t query_id, int rcode)
 {
 	uint8_t *buf;
 	struct dns_header *hdr;
@@ -340,7 +339,7 @@ int packet_build_servfail(struct dns_packet *response, uint16_t query_id)
 
 	hdr = (struct dns_header *)buf;
 	hdr->id = htons(query_id);
-	hdr->flags = htons(DNS_FLAGS_RESPONSE_SERVFAIL);
+	hdr->flags = htons(DNS_FLAG_QR | rcode);
 	hdr->questions = htons(0);
 	hdr->answers = htons(0);
 	hdr->authority = htons(0);
@@ -351,6 +350,55 @@ int packet_build_servfail(struct dns_packet *response, uint16_t query_id)
 	response->capacity = sizeof(struct dns_header);
 
 	return 0;
+}
+
+/**
+ * packet_precheck() - Validate a wire-format query before parsing
+ * @data: Raw packet data
+ * @len: Data length
+ *
+ * Rejects traffic that must never reach the resolver: responses sent to
+ * the listener (reflection and loop bait), non-QUERY opcodes, question
+ * counts other than one, malformed or oversized question names, and ANY
+ * queries when configured (amplification prevention, RFC 8482).
+ *
+ * Return: verdict deciding whether to process, drop, or answer an error
+ */
+enum query_verdict packet_precheck(const uint8_t *data, size_t len)
+{
+	const struct dns_header *hdr;
+	uint16_t flags, qtype;
+	size_t offset;
+	int qname_len;
+
+	if (!data || len < sizeof(*hdr))
+		return QUERY_VERDICT_DROP;
+
+	hdr = (const struct dns_header *)data;
+	flags = ntohs(hdr->flags);
+
+	if (flags & DNS_FLAG_QR)
+		return QUERY_VERDICT_DROP;
+
+	if (DNS_OPCODE(flags) != DNS_OPCODE_QUERY)
+		return QUERY_VERDICT_NOTIMP;
+
+	if (ntohs(hdr->questions) != 1)
+		return QUERY_VERDICT_FORMERR;
+
+	offset = sizeof(*hdr);
+	qname_len = scan_name_length(data, len, offset);
+	if (qname_len < 0 || qname_len > DNS_MAX_NAME_WIRE_LENGTH)
+		return QUERY_VERDICT_FORMERR;
+
+	if (offset + qname_len + 4 > len)
+		return QUERY_VERDICT_FORMERR;
+
+	qtype = (data[offset + qname_len] << 8) | data[offset + qname_len + 1];
+	if (qtype == DNS_TYPE_ANY && udns_security.block_any)
+		return QUERY_VERDICT_NOTIMP;
+
+	return QUERY_VERDICT_OK;
 }
 
 /**

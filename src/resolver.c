@@ -478,7 +478,7 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 
 		global_ctx.stats.upstream_errors++;
 
-		if (packet_build_servfail(&response, data->original_id) == 0) {
+		if (packet_build_rcode(&response, data->original_id, DNS_RCODE_SERVFAIL) == 0) {
 			client_response_send(data, response.data, response.len);
 			free(response.data);
 		}

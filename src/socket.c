@@ -68,13 +68,29 @@ struct udns_socket *udns_socket_for_client(struct sockaddr_storage *client_addr)
 		return &global_ctx.sock6;
 }
 
+static void rcode_reply_send(struct udns_socket *sock, const uint8_t *query,
+                             struct sockaddr_storage *from, socklen_t from_len,
+                             int rcode)
+{
+	uint16_t query_id = (query[0] << 8) | query[1];
+	struct dns_packet response;
+
+	if (packet_build_rcode(&response, query_id, rcode) < 0)
+		return;
+
+	udns_socket_send(sock, response.data, response.len,
+	                 (struct sockaddr *)from, from_len);
+	free(response.data);
+}
+
 /**
  * socket_recv_cb() - Handle incoming DNS queries
  * @ufd: uloop file descriptor
  * @events: Event mask
  *
- * Receives DNS queries from clients, parses them, and invokes the
- * query callback. Handles malformed packets by sending SERVFAIL.
+ * Receives DNS queries from clients, validates them, and invokes the
+ * query callback. Invalid traffic is dropped or answered with an error
+ * rcode according to the packet_precheck() verdict.
  */
 static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 {
@@ -88,7 +104,7 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 	if (!(events & ULOOP_READ))
 		return;
 
-	len = recvfrom(sock->fd, buffer, sizeof(buffer), 0,
+	len = recvfrom(sock->fd, buffer, sizeof(buffer), MSG_TRUNC,
 	               (struct sockaddr *)&from, &from_len);
 	if (len < 0) {
 		if (errno != EAGAIN && errno != EWOULDBLOCK)
@@ -101,21 +117,31 @@ static void socket_recv_cb(struct uloop_fd *ufd, unsigned int events)
 
 	global_ctx.stats.total_queries++;
 
-	/* Parse DNS packet */
+	/* MSG_TRUNC reports the real datagram size for oversized packets */
+	if ((size_t)len > sizeof(buffer)) {
+		global_ctx.stats.malformed_queries++;
+		return;
+	}
+
+	switch (packet_precheck(buffer, len)) {
+	case QUERY_VERDICT_DROP:
+		global_ctx.stats.malformed_queries++;
+		return;
+	case QUERY_VERDICT_FORMERR:
+		global_ctx.stats.malformed_queries++;
+		rcode_reply_send(sock, buffer, &from, from_len, DNS_RCODE_FORMERR);
+		return;
+	case QUERY_VERDICT_NOTIMP:
+		global_ctx.stats.refused_queries++;
+		rcode_reply_send(sock, buffer, &from, from_len, DNS_RCODE_NOTIMP);
+		return;
+	case QUERY_VERDICT_OK:
+		break;
+	}
+
 	if (packet_parse(&pkt, buffer, len) < 0) {
-		global_ctx.stats.upstream_errors++;
-
-		/* Send SERVFAIL for malformed queries */
-		if (len >= 2) {
-			uint16_t query_id = (buffer[0] << 8) | buffer[1];
-			struct dns_packet response;
-
-			if (packet_build_servfail(&response, query_id) == 0) {
-				udns_socket_send(sock, response.data, response.len,
-				                 (struct sockaddr *)&from, from_len);
-				free(response.data);
-			}
-		}
+		global_ctx.stats.malformed_queries++;
+		rcode_reply_send(sock, buffer, &from, from_len, DNS_RCODE_FORMERR);
 		return;
 	}
 

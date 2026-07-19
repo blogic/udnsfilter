@@ -45,6 +45,10 @@ struct udns_ctx global_ctx = {
 	.next_proxy_port = DOH_PROXY_START_PORT
 };
 
+struct udns_security udns_security = {
+	.block_any = true,
+};
+
 static char *doh_bootstrap;
 
 /**
