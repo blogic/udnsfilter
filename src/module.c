@@ -344,7 +344,8 @@ uc_udnsfilter_filter_load(uc_vm_t *vm, size_t nargs)
  * @nargs: Number of arguments (0)
  *
  * Loads domain filter rules from all enabled filters defined in
- * /etc/config/dns UCI configuration file.
+ * /etc/config/dns UCI configuration file. Existing rules are cleared
+ * first, making the call idempotent for reloads.
  *
  * Return: Object with total_rules, loaded_filters, and filter details array
  */
@@ -366,6 +367,8 @@ uc_udnsfilter_filter_load_uci(uc_vm_t *vm, size_t nargs)
 		uci_free_context(uci_ctx);
 		return NULL;
 	}
+
+	filter_clear(&global_ctx.filter);
 
 	filters_array = ucv_array_new(vm);
 
@@ -413,6 +416,21 @@ uc_udnsfilter_filter_load_uci(uc_vm_t *vm, size_t nargs)
 	ucv_object_add(result, "filters", filters_array);
 
 	return result;
+}
+
+/**
+ * uc_udnsfilter_filter_clear() - Remove all loaded filter rules
+ * @vm: ucode VM instance
+ * @nargs: Number of arguments (0)
+ *
+ * Return: true
+ */
+static uc_value_t *
+uc_udnsfilter_filter_clear(uc_vm_t *vm, size_t nargs)
+{
+	filter_clear(&global_ctx.filter);
+
+	return ucv_boolean_new(true);
 }
 
 /**
@@ -833,6 +851,7 @@ static const uc_function_list_t module_fns[] = {
 	{ "shutdown",                uc_udnsfilter_shutdown },
 	{ "filter_load",             uc_udnsfilter_filter_load },
 	{ "filter_load_uci",         uc_udnsfilter_filter_load_uci },
+	{ "filter_clear",            uc_udnsfilter_filter_clear },
 	{ "filter_match",            uc_udnsfilter_filter_match },
 	{ "stats_get",               uc_udnsfilter_stats_get },
 	{ "stats_reset",             uc_udnsfilter_stats_reset },

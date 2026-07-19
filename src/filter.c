@@ -37,6 +37,18 @@ static struct filter_hashtable *hashtable_create(size_t size)
 	return ht;
 }
 
+static void rule_list_free(struct filter_rule *rule)
+{
+	struct filter_rule *next;
+
+	while (rule) {
+		next = rule->next;
+		free(rule->pattern);
+		free(rule);
+		rule = next;
+	}
+}
+
 static void hashtable_destroy(struct filter_hashtable *ht)
 {
 	size_t i;
@@ -44,15 +56,8 @@ static void hashtable_destroy(struct filter_hashtable *ht)
 	if (!ht)
 		return;
 
-	for (i = 0; i < ht->size; i++) {
-		struct filter_rule *rule = ht->buckets[i];
-		while (rule) {
-			struct filter_rule *next = rule->next;
-			free(rule->pattern);
-			free(rule);
-			rule = next;
-		}
-	}
+	for (i = 0; i < ht->size; i++)
+		rule_list_free(ht->buckets[i]);
 
 	free(ht->buckets);
 	free(ht);
@@ -100,26 +105,38 @@ int filter_init(struct filter_ctx *ctx)
 
 void filter_cleanup(struct filter_ctx *ctx)
 {
-	struct filter_rule *rule, *next;
-
 	if (!ctx)
 		return;
 
 	hashtable_destroy(ctx->exact_ht);
-
-	for (rule = ctx->subdomain_rules; rule; rule = next) {
-		next = rule->next;
-		free(rule->pattern);
-		free(rule);
-	}
-
-	for (rule = ctx->wildcard_rules; rule; rule = next) {
-		next = rule->next;
-		free(rule->pattern);
-		free(rule);
-	}
+	rule_list_free(ctx->subdomain_rules);
+	rule_list_free(ctx->wildcard_rules);
 
 	memset(ctx, 0, sizeof(*ctx));
+}
+
+void filter_clear(struct filter_ctx *ctx)
+{
+	size_t i;
+
+	if (!ctx)
+		return;
+
+	if (ctx->exact_ht) {
+		for (i = 0; i < ctx->exact_ht->size; i++) {
+			rule_list_free(ctx->exact_ht->buckets[i]);
+			ctx->exact_ht->buckets[i] = NULL;
+		}
+		ctx->exact_ht->count = 0;
+	}
+
+	rule_list_free(ctx->subdomain_rules);
+	rule_list_free(ctx->wildcard_rules);
+	ctx->subdomain_rules = NULL;
+	ctx->wildcard_rules = NULL;
+	ctx->subdomain_count = 0;
+	ctx->wildcard_count = 0;
+	ctx->total_count = 0;
 }
 
 int filter_add_rule(struct filter_ctx *ctx, const char *pattern)

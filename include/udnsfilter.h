@@ -192,6 +192,7 @@ void resolver_get_config(struct resolver_ctx *ctx, bool *rotation, unsigned int 
 /* filter.c - Filter engine */
 int filter_init(struct filter_ctx *ctx);
 void filter_cleanup(struct filter_ctx *ctx);
+void filter_clear(struct filter_ctx *ctx);
 int filter_load_file(struct filter_ctx *ctx, const char *path);
 int filter_add_rule(struct filter_ctx *ctx, const char *pattern);
 bool filter_match(struct filter_ctx *ctx, const char *domain,
