@@ -22,11 +22,28 @@ let config = {
 	rebind_domains: [],
 };
 
+const DOMAIN_MAP_MAX = 4096;
+const TRACKED_IPS_MAX = 32;
+
 let ubus_conn;
 let ubus_obj;
 
 let tracked_ips = {};
 let global_domains = { replied: {}, blocked: {} };
+
+function domain_count(owner, key, domain) {
+	let map = owner[key];
+
+	/* Reset a full map instead of evicting: these are diagnostic
+	 * counters and a per-query scan under a random-subdomain flood
+	 * would cost more than the history is worth. */
+	if (map[domain] == null && length(map) >= DOMAIN_MAP_MAX)
+		map = owner[key] = {};
+
+	if (!map[domain])
+		map[domain] = 0;
+	map[domain]++;
+}
 
 function config_bool(value, fallback) {
 	if (value == null)
@@ -146,8 +163,11 @@ function ubus_init() {
 				}
 
 				if (enable) {
-					if (!tracked_ips[ip])
+					if (!tracked_ips[ip]) {
+						if (length(tracked_ips) >= TRACKED_IPS_MAX)
+							return { success: false, error: "too many tracked addresses" };
 						tracked_ips[ip] = { replied: {}, blocked: {} };
+					}
 					return { success: true, tracking: ip };
 				} else {
 					if (tracked_ips[ip])
@@ -194,30 +214,18 @@ function handle_query(packet, client_addr) {
 			if (config.verbose)
 				printf("BLOCKED: %s (rule: %s)\n", domain, result.rule);
 
-			if (!global_domains.blocked[domain])
-				global_domains.blocked[domain] = 0;
-			global_domains.blocked[domain]++;
-
-			if (tracked_ips[client_ip]) {
-				if (!tracked_ips[client_ip].blocked[domain])
-					tracked_ips[client_ip].blocked[domain] = 0;
-				tracked_ips[client_ip].blocked[domain]++;
-			}
+			domain_count(global_domains, 'blocked', domain);
+			if (tracked_ips[client_ip])
+				domain_count(tracked_ips[client_ip], 'blocked', domain);
 
 			udnsfilter.send_blocked_response(client_addr, packet);
 			return;
 		}
 	}
 
-	if (!global_domains.replied[domain])
-		global_domains.replied[domain] = 0;
-	global_domains.replied[domain]++;
-
-	if (tracked_ips[client_ip]) {
-		if (!tracked_ips[client_ip].replied[domain])
-			tracked_ips[client_ip].replied[domain] = 0;
-		tracked_ips[client_ip].replied[domain]++;
-	}
+	domain_count(global_domains, 'replied', domain);
+	if (tracked_ips[client_ip])
+		domain_count(tracked_ips[client_ip], 'replied', domain);
 
 	udnsfilter.forward_query(client_addr, packet);
 }
