@@ -36,6 +36,70 @@ struct resolver_fd {
 
 static struct server_state *server_states = NULL;
 
+struct rebind_domain {
+	char *domain;
+	struct rebind_domain *next;
+};
+
+static bool rebind_protection_enabled = true;
+static struct rebind_domain *rebind_domains;
+
+void rebind_config_set(bool enable)
+{
+	rebind_protection_enabled = enable;
+}
+
+int rebind_domain_add(const char *domain)
+{
+	struct rebind_domain *entry;
+
+	if (!domain || !*domain)
+		return -1;
+
+	entry = calloc(1, sizeof(*entry));
+	if (!entry)
+		return -1;
+
+	entry->domain = strdup(domain);
+	if (!entry->domain) {
+		free(entry);
+		return -1;
+	}
+
+	entry->next = rebind_domains;
+	rebind_domains = entry;
+
+	return 0;
+}
+
+void rebind_domains_clear(void)
+{
+	struct rebind_domain *entry, *tmp;
+
+	for (entry = rebind_domains; entry; entry = tmp) {
+		tmp = entry->next;
+		free(entry->domain);
+		free(entry);
+	}
+
+	rebind_domains = NULL;
+}
+
+static bool rebind_domain_allowed(const char *domain)
+{
+	struct rebind_domain *entry;
+
+	if (!domain)
+		return false;
+
+	for (entry = rebind_domains; entry; entry = entry->next) {
+		if (domain_match_subdomain(domain, entry->domain))
+			return true;
+	}
+
+	return false;
+}
+
 /**
  * server_state_find_or_create() - Find or create server state entry
  * @addr: Server address string
@@ -253,6 +317,8 @@ void resolver_cleanup(struct resolver_ctx *ctx)
 	}
 	server_states = NULL;
 
+	rebind_domains_clear();
+
 	memset(ctx, 0, sizeof(*ctx));
 }
 
@@ -416,7 +482,9 @@ static void ares_dnsrec_callback(void *arg, ares_status_t status, size_t timeout
 			client_response_send(data, response.data, response.len);
 			free(response.data);
 		}
-	} else if (dns_response_contains_private_ip(response_buf, response_len)) {
+	} else if (rebind_protection_enabled &&
+	           !rebind_domain_allowed(data->domain) &&
+	           dns_response_contains_private_ip(response_buf, response_len)) {
 		rebind_response_send(data);
 	} else if (!data->tcp_conn_id && response_len > data->max_udp_size) {
 		truncated_response_send(data);

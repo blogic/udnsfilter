@@ -595,6 +595,45 @@ uc_udnsfilter_set_upstream(uc_vm_t *vm, size_t nargs)
 }
 
 /**
+ * uc_udnsfilter_rebind_protection() - Configure DNS rebind protection
+ * @vm: ucode VM instance
+ * @nargs: Number of arguments (2)
+ *
+ * Arguments: enable (bool), domains (optional array of strings)
+ *
+ * Enables or disables blocking of upstream responses that resolve to
+ * private addresses. Domains listed in the second argument (and their
+ * subdomains) are exempt from the check.
+ *
+ * Return: true on success, NULL on invalid arguments
+ */
+static uc_value_t *
+uc_udnsfilter_rebind_protection(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *enable_val = uc_fn_arg(0);
+	uc_value_t *domains_val = uc_fn_arg(1);
+
+	if (ucv_type(enable_val) != UC_BOOLEAN)
+		return NULL;
+
+	rebind_domains_clear();
+	rebind_config_set(ucv_boolean_get(enable_val));
+
+	if (domains_val && ucv_type(domains_val) == UC_ARRAY) {
+		size_t len = ucv_array_length(domains_val);
+
+		for (size_t i = 0; i < len; i++) {
+			uc_value_t *domain = ucv_array_get(domains_val, i);
+
+			if (ucv_type(domain) == UC_STRING)
+				rebind_domain_add(ucv_string_get(domain));
+		}
+	}
+
+	return ucv_boolean_new(true);
+}
+
+/**
  * uc_udnsfilter_reinit() - Reinitialise the resolver
  * @vm: ucode VM instance
  * @nargs: Number of arguments (0)
@@ -894,6 +933,7 @@ static const uc_function_list_t module_fns[] = {
 	{ "stats_get",               uc_udnsfilter_stats_get },
 	{ "stats_reset",             uc_udnsfilter_stats_reset },
 	{ "set_upstream",            uc_udnsfilter_set_upstream },
+	{ "rebind_protection",       uc_udnsfilter_rebind_protection },
 	{ "reinit",                  uc_udnsfilter_reinit },
 	{ "get_server_states",       uc_udnsfilter_get_server_states },
 	{ "send_blocked_response",   uc_udnsfilter_send_blocked_response },

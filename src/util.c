@@ -47,6 +47,34 @@ bool domain_match_exact(const char *domain, const char *pattern)
 }
 
 /**
+ * domain_match_subdomain() - Test for domain or subdomain match
+ * @domain: Domain to test
+ * @pattern: Base domain pattern
+ *
+ * Matches both exact domain and all subdomains (e.g., pattern "example.com"
+ * matches "example.com" and "www.example.com").
+ *
+ * Return: true if match, false otherwise
+ */
+bool domain_match_subdomain(const char *domain, const char *pattern)
+{
+	size_t domain_len = strlen(domain);
+	size_t pattern_len = strlen(pattern);
+
+	if (strcasecmp(domain, pattern) == 0)
+		return true;
+
+	if (domain_len > pattern_len) {
+		const char *suffix = domain + (domain_len - pattern_len);
+
+		if (suffix[-1] == '.' && strcasecmp(suffix, pattern) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+/**
  * is_private_ipv4() - Check if IPv4 address is private
  * @ip: IPv4 address in host byte order
  *

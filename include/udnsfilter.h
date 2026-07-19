@@ -194,6 +194,9 @@ void resolver_set_servers(struct resolver_ctx *ctx, const char **servers, int co
 int resolver_reinit(struct resolver_ctx *ctx);
 int resolver_get_server_states(struct server_state **states);
 void resolver_get_config(struct resolver_ctx *ctx, bool *rotation, unsigned int *cache_ttl);
+void rebind_config_set(bool enable);
+int rebind_domain_add(const char *domain);
+void rebind_domains_clear(void);
 
 /* filter.c - Filter engine */
 int filter_init(struct filter_ctx *ctx);
@@ -208,6 +211,7 @@ void filter_stats(struct filter_ctx *ctx, size_t *count);
 /* util.c - Utilities */
 uint32_t hash_string(const char *str);
 bool domain_match_exact(const char *domain, const char *pattern);
+bool domain_match_subdomain(const char *domain, const char *pattern);
 const char *qtype_to_string(uint16_t qtype);
 bool is_private_ipv4(uint32_t ip);
 bool is_private_ipv6(const uint8_t *ip);
