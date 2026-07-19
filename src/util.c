@@ -163,6 +163,45 @@ bool is_private_ipv6(const uint8_t *ip)
 }
 
 /**
+ * name_skip() - Skip a wire-format DNS name
+ * @ptr: Current position (updated)
+ * @remaining: Bytes remaining (updated)
+ *
+ * A name ends with either a null label or a two-byte compression
+ * pointer; both terminate it, so nothing may be consumed afterwards.
+ *
+ * Return: true on success, false on malformed name
+ */
+static bool name_skip(const uint8_t **ptr, size_t *remaining)
+{
+	while (*remaining > 0) {
+		uint8_t label_len = **ptr;
+
+		if (label_len == 0) {
+			(*ptr)++;
+			(*remaining)--;
+			return true;
+		}
+
+		if ((label_len & 0xc0) == 0xc0) {
+			if (*remaining < 2)
+				return false;
+			*ptr += 2;
+			*remaining -= 2;
+			return true;
+		}
+
+		if (label_len > DNS_MAX_LABEL_LENGTH || *remaining < (size_t)(label_len + 1))
+			return false;
+
+		*ptr += label_len + 1;
+		*remaining -= label_len + 1;
+	}
+
+	return false;
+}
+
+/**
  * dns_response_contains_private_ip() - Check DNS response for private IPs
  * @response: DNS response packet
  * @len: Packet length
@@ -176,7 +215,7 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 {
 	const struct dns_header *hdr;
 	const uint8_t *ptr;
-	uint16_t ancount;
+	uint16_t ancount, qdcount;
 	size_t remaining;
 
 	if (!response || len < sizeof(struct dns_header))
@@ -184,6 +223,7 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 
 	hdr = (const struct dns_header *)response;
 	ancount = ntohs(hdr->answers);
+	qdcount = ntohs(hdr->questions);
 
 	if (ancount == 0)
 		return false;
@@ -191,61 +231,17 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 	ptr = response + sizeof(struct dns_header);
 	remaining = len - sizeof(struct dns_header);
 
-	/* Skip question section name */
-	while (remaining > 0 && *ptr != 0) {
-		uint8_t label_len = *ptr;
-		if ((label_len & 0xc0) == 0xc0) {
-			if (remaining < 2)
-				return false;
-			ptr += 2;
-			remaining -= 2;
-			break;
-		}
-		if (label_len > DNS_MAX_LABEL_LENGTH || remaining < (size_t)(label_len + 1))
+	for (uint16_t i = 0; i < qdcount; i++) {
+		if (!name_skip(&ptr, &remaining) || remaining < 4)
 			return false;
-		ptr += label_len + 1;
-		remaining -= label_len + 1;
+		ptr += 4;
+		remaining -= 4;
 	}
 
-	/* Skip null terminator */
-	if (remaining > 0 && *ptr == 0) {
-		ptr++;
-		remaining--;
-	}
-
-	/* Skip qtype and qclass */
-	if (remaining < 4)
-		return false;
-	ptr += 4;
-	remaining -= 4;
-
-	/* Scan answer section for private IPs */
-	for (uint16_t i = 0; i < ancount && remaining >= 12; i++) {
-		/* Skip answer name */
-		while (remaining > 0 && *ptr != 0) {
-			uint8_t label_len = *ptr;
-			if ((label_len & 0xc0) == 0xc0) {
-				if (remaining < 2)
-					return false;
-				ptr += 2;
-				remaining -= 2;
-				break;
-			}
-			if (label_len > DNS_MAX_LABEL_LENGTH || remaining < (size_t)(label_len + 1))
-				return false;
-			ptr += label_len + 1;
-			remaining -= label_len + 1;
-		}
-
-		if (remaining > 0 && *ptr == 0) {
-			ptr++;
-			remaining--;
-		}
-
-		if (remaining < 10)
+	for (uint16_t i = 0; i < ancount; i++) {
+		if (!name_skip(&ptr, &remaining) || remaining < 10)
 			return false;
 
-		/* Extract rtype and rdlength */
 		uint16_t rtype = (ptr[0] << 8) | ptr[1];
 		uint16_t rdlength = (ptr[8] << 8) | ptr[9];
 
@@ -255,14 +251,11 @@ bool dns_response_contains_private_ip(const uint8_t *response, size_t len)
 		if (remaining < rdlength)
 			return false;
 
-		/* Check A records for private IPv4 */
 		if (rtype == DNS_TYPE_A && rdlength == 4) {
 			uint32_t ip = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
 			if (is_private_ipv4(ip))
 				return true;
-		}
-		/* Check AAAA records for private IPv6 */
-		else if (rtype == DNS_TYPE_AAAA && rdlength == 16) {
+		} else if (rtype == DNS_TYPE_AAAA && rdlength == 16) {
 			if (is_private_ipv6(ptr))
 				return true;
 		}
